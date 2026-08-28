@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: pbk-control
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true
+    disk:
+      name: pbk-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: DATA_DIR
+        value: /var/data
+      - key: NPM_CONFIG_PRODUCTION
+        value: "false"
+      - key: SESSION_SECRET
+        generateValue: true

@@ -1,0 +1,29 @@
+{
+  "name": "ГРР-Контроль",
+  "short_name": "ГРР",
+  "description": "Панель управления геологоразведкой и бурением: план, простои, экономика, пробоподготовка, керн.",
+  "lang": "ru",
+  "dir": "ltr",
+  "id": "grr-control",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "any",
+  "theme_color": "#1E3A5F",
+  "background_color": "#F5F7FA",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./icons/icon-1024.png", "sizes": "1024x1024", "type": "image/png", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Дашборд", "short_name": "Дашборд", "url": "./index.html#/" },
+    { "name": "Сводка для директора", "short_name": "Сводка", "url": "./index.html#/summary" },
+    { "name": "Импорт данных", "short_name": "Импорт", "url": "./index.html#/import" },
+    { "name": "Шаблоны Excel", "short_name": "Шаблоны", "url": "./index.html#/templates" }
+  ]
+}

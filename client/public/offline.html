@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#1E3A5F" />
+    <title>Нет подключения — ГРР-Контроль</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+        background: #f5f7fa; color: #16283c; padding: 24px;
+        font-family: 'Inter', 'Segoe UI', Roboto, Arial, sans-serif;
+      }
+      .card {
+        width: 100%; max-width: 460px; background: #fff; border: 1px solid #dde3ea;
+        border-radius: 12px; padding: 24px;
+      }
+      .mark { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+      .mark svg { width: 34px; height: 34px; color: #1e3a5f; }
+      .mark b { font-size: 15px; }
+      h1 { font-size: 19px; margin: 0 0 10px; line-height: 1.3; }
+      p { font-size: 14px; line-height: 1.55; margin: 0 0 10px; color: #44566c; }
+      ul { font-size: 13.5px; color: #44566c; line-height: 1.6; margin: 0 0 18px; padding-left: 20px; }
+      button {
+        width: 100%; padding: 11px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+        background: #1e3a5f; color: #fff; border: 0; border-radius: 8px;
+      }
+      button:hover { background: #274b78; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #0e1826; color: #e6edf5; }
+        .card { background: #142236; border-color: #24374f; }
+        .mark svg { color: #cfe0f2; }
+        p, ul { color: #a9bacd; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="mark">
+        <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1" y="1" width="30" height="30" rx="7" stroke="currentColor" stroke-width="2" />
+          <path d="M16 5v22" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          <path d="M10 11h12M11.5 17h9M13 23h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        <b>ГРР-Контроль</b>
+      </div>
+      <h1>Нет подключения — данные будут доступны после восстановления связи</h1>
+      <p>
+        Программа открылась из памяти устройства, но сервер сейчас недоступен. Показатели, рапорты и
+        выгрузки подтянутся автоматически, как только связь появится.
+      </p>
+      <ul>
+        <li>Проверьте мобильный интернет или Wi-Fi.</li>
+        <li>На вахте связь часто появляется в определённых точках участка — попробуйте позже.</li>
+        <li>Введённые данные не потеряны: они сохраняются на сервере при отправке.</li>
+      </ul>
+      <button type="button" onclick="location.reload()">Повторить попытку</button>
+    </div>
+  </body>
+</html>
