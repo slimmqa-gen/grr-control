@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Plus, Trash2, ShieldCheck, KeyRound } from "lucide-react";
+import { Plus, Trash2, ShieldCheck, KeyRound, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,6 +9,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useReference } from "@/lib/hooks";
@@ -33,6 +36,9 @@ export default function UsersPage() {
   const [show, setShow] = useState(false);
   const [form, setForm] = useState({ login: "", password: "", fio: "", role: "viewer", objectId: "все" });
   const [error, setError] = useState("");
+  const [editUser, setEditUser] = useState<any | null>(null);
+  const [editForm, setEditForm] = useState({ fio: "", password: "" });
+  const [editError, setEditError] = useState("");
 
   const objects: any[] = ref?.objects ?? [];
 
@@ -65,6 +71,25 @@ export default function UsersPage() {
     onSuccess: () => { queryClient.invalidateQueries(); toast({ title: "Пользователь удалён" }); },
     onError: (e: any) => toast({ title: "Не удалось удалить", description: e.message, variant: "destructive" }),
   });
+
+  const openEdit = (u: any) => {
+    setEditError("");
+    setEditUser(u);
+    setEditForm({ fio: u.fio ?? "", password: "" });
+  };
+
+  const saveEdit = () => {
+    const fio = editForm.fio.trim();
+    const password = editForm.password;
+    if (!fio) { setEditError("Укажите ФИО и должность"); return; }
+    if (password && password.length < 4) { setEditError("Пароль должен содержать минимум 4 символа"); return; }
+    if (!editUser) return;
+    const body: any = { fio };
+    if (password) body.password = password;
+    patch.mutate({ id: editUser.id, body }, {
+      onSuccess: () => { setEditUser(null); setEditForm({ fio: "", password: "" }); },
+    } as any);
+  };
 
   if (users.error) return <ErrorBox text="Раздел «Пользователи» доступен только генеральному директору." />;
 
@@ -178,6 +203,10 @@ export default function UsersPage() {
                           </Button>
                         </td>
                         <td className="py-2 text-right">
+                          <Button variant="ghost" size="icon" aria-label="Изменить ФИО и пароль"
+                            onClick={() => openEdit(u)} data-testid={`button-edit-user-${u.login}`}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
                           <Button variant="ghost" size="icon" aria-label="Удалить"
                             onClick={() => remove.mutate(u.id)} data-testid={`button-delete-user-${u.login}`}>
                             <Trash2 className="h-4 w-4" />
@@ -247,6 +276,40 @@ export default function UsersPage() {
           </Section>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={!!editUser} onOpenChange={(open) => { if (!open) setEditUser(null); }}>
+        <DialogContent className="max-w-md" data-testid="dialog-edit-user">
+          <DialogHeader>
+            <DialogTitle>Изменить пользователя</DialogTitle>
+            <DialogDescription>
+              Изменение ФИО и пароля пользователя {editUser?.login ?? ""}.
+              Оставьте пароль пустым, если менять его не нужно.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium">ФИО и должность</label>
+              <Input value={editForm.fio}
+                onChange={(e) => setEditForm({ ...editForm, fio: e.target.value })}
+                data-testid="input-edit-user-fio" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium">Новый пароль</label>
+              <Input type="password" value={editForm.password}
+                onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                placeholder="Оставьте пустым без изменений"
+                data-testid="input-edit-user-password" />
+            </div>
+            {editError && <ErrorBox text={editError} />}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditUser(null)}>Отмена</Button>
+            <Button onClick={saveEdit} disabled={patch.isPending} data-testid="button-save-edit-user">
+              Сохранить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
