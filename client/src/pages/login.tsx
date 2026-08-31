@@ -28,6 +28,7 @@ export default function LoginPage() {
         <div className="mb-5 text-center text-white drop-shadow-lg">
           <img src="/pbk_logo.jpg" alt="Логотип ООО ПБК" className="mx-auto mb-4 h-28 w-full rounded-xl object-contain" />
           <h1 className="text-xl font-semibold">Производственно - Буровая компания</h1>
+          <p className="mt-2 text-sm font-medium tracking-wide text-orange-300">Точные данные. Надёжные решения. Большие открытия</p>
         </div>
         <Card className="bg-white/95 p-5 shadow-2xl backdrop-blur-sm">
           <h2 className="text-base font-semibold">Вход в программу</h2>
