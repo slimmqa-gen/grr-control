@@ -576,7 +576,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           (ev) => ev.employeeId === empId && ev.endDate >= todayIso
         );
         const kind = String(body.manualStatus ?? "");
-        const isAbsenceKind = ["vacation", "sick", "trip", "study", "office", "pp", "between"].includes(kind);
+        const isAbsenceKind = ["vacation", "sick", "trip", "study", "office", "pp"].includes(kind);
 
         if (isAbsenceKind) {
           if (openEvent && openEvent.kind === kind) {
