@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS inventory (
 CREATE TABLE IF NOT EXISTS employees (
   id INTEGER PRIMARY KEY AUTOINCREMENT, fio TEXT NOT NULL, position TEXT NOT NULL,
   object_id INTEGER NOT NULL, brigade_id INTEGER NOT NULL, phone TEXT NOT NULL DEFAULT '',
-  import_id INTEGER NOT NULL DEFAULT 0, medical_exam_end_date TEXT NOT NULL DEFAULT '', work_status TEXT NOT NULL DEFAULT 'office');
+  import_id INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS positions (
   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS shifts (
@@ -207,10 +207,8 @@ try {
   const cols = sqlite.prepare("PRAGMA table_info(employees)").all() as any[];
   if (!cols.some((c) => c.name === "manual_status"))
     sqlite.exec("ALTER TABLE employees ADD COLUMN manual_status TEXT NOT NULL DEFAULT ''");
-  if (!cols.some((c) => c.name === "medical_exam_end_date"))
-    sqlite.exec("ALTER TABLE employees ADD COLUMN medical_exam_end_date TEXT NOT NULL DEFAULT ''");
-  if (!cols.some((c) => c.name === "work_status"))
-    sqlite.exec("ALTER TABLE employees ADD COLUMN work_status TEXT NOT NULL DEFAULT 'office'");
+  if (!cols.some((c) => c.name === "medical_exam_end_date")) sqlite.exec("ALTER TABLE employees ADD COLUMN medical_exam_end_date TEXT NOT NULL DEFAULT ''");
+  if (!cols.some((c) => c.name === "work_status")) sqlite.exec("ALTER TABLE employees ADD COLUMN work_status TEXT NOT NULL DEFAULT 'office'");
 } catch {
   /* таблица только что создана */
 }

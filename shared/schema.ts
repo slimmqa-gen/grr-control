@@ -182,7 +182,7 @@ export const employeeEvents = sqliteTable("employee_events", {
 });
 export type EmployeeEvent = typeof employeeEvents.$inferSelect;
 
-export const EMPLOYEE_EVENT_KINDS = ["vacation", "sick", "trip", "study", "office", "pp"] as const;
+export const EMPLOYEE_EVENT_KINDS = ["vacation", "sick", "trip", "study", "office", "pp", "between"] as const;
 export const OPEN_ENDED_DATE = "9999-12-31";
 
 export const EMPLOYEE_EVENT_LABELS: Record<string, string> = {
@@ -192,6 +192,7 @@ export const EMPLOYEE_EVENT_LABELS: Record<string, string> = {
   study: "Обучение",
   office: "Офис",
   pp: "Работа в ПП",
+  between: "На межвахте",
 };
 
 export const insertEmployeeEventSchema = createInsertSchema(employeeEvents).omit({ id: true }).extend({
@@ -633,8 +634,9 @@ export const insertEmployeeSchema = createInsertSchema(employees).omit({ id: tru
   brigadeId: z.coerce.number().default(0),
   phone: z.string().default(""),
   importId: z.coerce.number().default(0),
+  manualStatus: z.string().default(""),
   medicalExamEndDate: z.string().default(""),
-  workStatus: z.enum(["office", "sample_prep", "shift"]).default("office"),
+  workStatus: z.enum(["office", "pp", "between"]).default("office"),
 });
 export const insertPositionSchema = createInsertSchema(positions).omit({ id: true }).extend({
   name: z.string().trim().min(1, "Укажите название должности"),

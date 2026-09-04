@@ -33,7 +33,6 @@ import { buildEstimateAnalytics } from "./estimates";
 import { seedEstimates } from "./seedEstimates";
 import { registerPbkRoutes } from "./pbkroutes";
 import { registerSectionRoutes } from "./sections";
-import { registerControlRoutes } from "./control";
 import { resetConfig } from "./sectionsconfig";
 import { ensurePbkLoaded } from "./pbkload";
 import {
@@ -78,7 +77,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   ensurePbkLoaded();
   registerUserRoutes(app);
   registerSectionRoutes(app);
-  registerControlRoutes(app);
 
   // ---------- Умный импорт «живых» сводок ----------
   app.post("/api/smart/upload", upload.single("file"), async (req, res) => {
@@ -578,7 +576,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           (ev) => ev.employeeId === empId && ev.endDate >= todayIso
         );
         const kind = String(body.manualStatus ?? "");
-        const isAbsenceKind = ["vacation", "sick", "trip", "study", "office", "pp"].includes(kind);
+        const isAbsenceKind = ["vacation", "sick", "trip", "study", "office", "pp", "between"].includes(kind);
 
         if (isAbsenceKind) {
           if (openEvent && openEvent.kind === kind) {

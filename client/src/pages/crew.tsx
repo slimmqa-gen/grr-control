@@ -32,7 +32,7 @@ function addDaysIso(iso: string, days: number) {
 }
 
 type Status = "onshift" | "between" | "none" | "vacation" | "sick" | "trip" | "study";
-const MANUAL_STATUSES: Status[] = ["vacation", "sick", "trip", "study"];
+const MANUAL_STATUSES: Status[] = ["vacation", "sick", "trip", "study", "between"];
 const STATUS_TEXT: Record<Status, string> = {
   onshift: "На вахте",
   between: "На межвахте",
@@ -41,6 +41,7 @@ const STATUS_TEXT: Record<Status, string> = {
   sick: "Больничный",
   trip: "Командировка",
   study: "Обучение",
+  between: "На межвахте",
 };
 const STATUS_LEVEL: Record<Status, Level> = {
   onshift: "ok",
@@ -50,6 +51,7 @@ const STATUS_LEVEL: Record<Status, Level> = {
   sick: "warn",
   trip: "warn",
   study: "warn",
+  between: "warn",
 };
 
 export default function Crew() {
@@ -245,8 +247,7 @@ export default function Crew() {
         objectId: Number(empForm.objectId) || 0,
         brigadeId: 0,
         phone: empForm.phone.trim(),
-        medicalExamEndDate: empForm.medicalExamEndDate,
-        workStatus: empForm.workStatus,
+        medicalExamEndDate: empForm.medicalExamEndDate, workStatus: empForm.workStatus,
       };
       if (empDialog.id) return (await apiRequest("PATCH", `/api/employees/${empDialog.id}`, body)).json();
       const created = (await apiRequest("POST", "/api/employees", body)).json();
@@ -357,9 +358,7 @@ export default function Crew() {
       position: positionOptions.includes(e.position) ? e.position : OWN_POSITION,
       ownPosition: positionOptions.includes(e.position) ? "" : e.position,
       objectId: String(e.objectId || 0),
-      phone: e.phone ?? "",
-      medicalExamEndDate: e.medicalExamEndDate ?? "",
-      workStatus: e.workStatus ?? "office",
+      phone: e.phone ?? "", medicalExamEndDate: e.medicalExamEndDate ?? "", workStatus: e.workStatus ?? "office",
     });
     setEmpDialog({ open: true, id: e.id });
   };
@@ -494,12 +493,13 @@ export default function Crew() {
                   <SelectContent>
                     <SelectItem value="all">Все статусы</SelectItem>
                     <SelectItem value="onshift">На вахте</SelectItem>
-                    <SelectItem value="between">На межвахте</SelectItem>
+                    <SelectItem value="between">Вахтовый метод</SelectItem>
                     <SelectItem value="none">Вахта не назначена</SelectItem>
                     <SelectItem value="vacation">Отпуск</SelectItem>
                     <SelectItem value="sick">Больничный</SelectItem>
                     <SelectItem value="trip">Командировка</SelectItem>
                     <SelectItem value="study">Обучение</SelectItem>
+                              <SelectItem value="between">Вахтовый метод</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -567,9 +567,7 @@ export default function Crew() {
                       <th className="py-2 pr-3 font-medium">Должность</th>
                       <th className="py-2 pr-3 font-medium">Объект</th>
                       <th className="py-2 pr-3 font-medium">Телефон</th>
-                      <th className="py-2 pr-3 font-medium">Место работы</th>
-                      <th className="py-2 pr-3 font-medium">Медосмотр до</th>
-                      <th className="py-2 pr-3 font-medium">Статус</th>
+                      <th className="py-2 pr-3 font-medium">Метод работы</th><th className="py-2 pr-3 font-medium">Медосмотр</th><th className="py-2 pr-3 font-medium">Статус</th>
                       <th className="py-2 text-right font-medium">Действия</th>
                     </tr>
                   </thead>
@@ -588,8 +586,7 @@ export default function Crew() {
                         <td className="py-2 pr-3 text-muted-foreground">{e.position}</td>
                         <td className="py-2 pr-3 text-muted-foreground">{objName(e.objectId) || "не указан"}</td>
                         <td className="num py-2 pr-3 whitespace-nowrap text-muted-foreground">{e.phone || "—"}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap">{e.workStatus === "sample_prep" ? "Работа в пробоподготовке" : e.workStatus === "shift" ? "Вахтовый метод" : "Работа в офисе"}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap">{e.medicalExamEndDate || "Не указана"}</td>
+                        <td className="py-2 pr-3">{e.workStatus === "pp" ? "Работа в ПП" : e.workStatus === "between" ? "Вахтовый метод" : "Работа в офисе"}</td><td className="py-2 pr-3">{e.medicalExamEndDate || "—"}</td>
                         <td className="py-2 pr-3">
                           <Select
                             value={e.manualStatus || "auto"}
@@ -610,6 +607,7 @@ export default function Crew() {
                               <SelectItem value="sick">Больничный</SelectItem>
                               <SelectItem value="trip">Командировка</SelectItem>
                               <SelectItem value="study">Обучение</SelectItem>
+                              <SelectItem value="between">На межвахте</SelectItem>
                             </SelectContent>
                           </Select>
                         </td>
@@ -865,6 +863,7 @@ export default function Crew() {
                   <SelectItem value="sick">Больничный</SelectItem>
                   <SelectItem value="trip">Командировка</SelectItem>
                   <SelectItem value="study">Обучение</SelectItem>
+                              <SelectItem value="between">На межвахте</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1021,20 +1020,9 @@ export default function Crew() {
                   data-testid="input-phone"
                 />
               </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium">Место работы</label>
-                <Select value={empForm.workStatus} onValueChange={(v) => setEmpForm({ ...empForm, workStatus: v })}>
-                  <SelectTrigger data-testid="select-work-status"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="office">Работа в офисе</SelectItem>
-                    <SelectItem value="sample_prep">Работа в пробоподготовке</SelectItem>
-                    <SelectItem value="shift">Вахтовый метод</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium">Дата окончания медосмотра</label>
-                <Input type="date" value={empForm.medicalExamEndDate} onChange={(e) => setEmpForm({ ...empForm, medicalExamEndDate: e.target.value })} data-testid="input-medical-exam-end" />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Input type="date" value={empForm.medicalExamEndDate} onChange={(e) => setEmpForm({ ...empForm, medicalExamEndDate: e.target.value })} />
+                <Select value={empForm.workStatus} onValueChange={(v) => setEmpForm({ ...empForm, workStatus: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="office">Работа в офисе</SelectItem><SelectItem value="pp">Работа в ПП</SelectItem><SelectItem value="between">Вахтовый метод</SelectItem></SelectContent></Select>
               </div>
             </div>
             {empError && <ErrorBox text={empError} />}
@@ -1219,6 +1207,7 @@ export default function Crew() {
                   <SelectItem value="sick">Больничный</SelectItem>
                   <SelectItem value="trip">Командировка</SelectItem>
                   <SelectItem value="study">Обучение</SelectItem>
+                              <SelectItem value="between">На межвахте</SelectItem>
                 </SelectContent>
               </Select>
             </div>
