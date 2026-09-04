@@ -74,7 +74,7 @@ export default function Crew() {
 
   // диалоги
   const [empDialog, setEmpDialog] = useState<{ open: boolean; id: number | null }>({ open: false, id: null });
-  const [empForm, setEmpForm] = useState({ fio: "", position: "", ownPosition: "", objectId: NO_OBJECT, phone: "" });
+  const [empForm, setEmpForm] = useState({ fio: "", position: "", ownPosition: "", objectId: NO_OBJECT, phone: "", medicalExamEndDate: "", workStatus: "office" });
   const [empError, setEmpError] = useState("");
 
   const [shiftDialog, setShiftDialog] = useState<{ open: boolean; ids: number[] }>({ open: false, ids: [] });
@@ -245,6 +245,8 @@ export default function Crew() {
         objectId: Number(empForm.objectId) || 0,
         brigadeId: 0,
         phone: empForm.phone.trim(),
+        medicalExamEndDate: empForm.medicalExamEndDate,
+        workStatus: empForm.workStatus,
       };
       if (empDialog.id) return (await apiRequest("PATCH", `/api/employees/${empDialog.id}`, body)).json();
       const created = (await apiRequest("POST", "/api/employees", body)).json();
@@ -345,7 +347,7 @@ export default function Crew() {
 
   const openAdd = () => {
     setEmpError("");
-    setEmpForm({ fio: "", position: positionOptions[0] ?? "", ownPosition: "", objectId: NO_OBJECT, phone: "" });
+    setEmpForm({ fio: "", position: positionOptions[0] ?? "", ownPosition: "", objectId: NO_OBJECT, phone: "", medicalExamEndDate: "", workStatus: "office" });
     setEmpDialog({ open: true, id: null });
   };
   const openEdit = (e: any) => {
@@ -356,6 +358,8 @@ export default function Crew() {
       ownPosition: positionOptions.includes(e.position) ? "" : e.position,
       objectId: String(e.objectId || 0),
       phone: e.phone ?? "",
+      medicalExamEndDate: e.medicalExamEndDate ?? "",
+      workStatus: e.workStatus ?? "office",
     });
     setEmpDialog({ open: true, id: e.id });
   };
@@ -563,6 +567,8 @@ export default function Crew() {
                       <th className="py-2 pr-3 font-medium">Должность</th>
                       <th className="py-2 pr-3 font-medium">Объект</th>
                       <th className="py-2 pr-3 font-medium">Телефон</th>
+                      <th className="py-2 pr-3 font-medium">Место работы</th>
+                      <th className="py-2 pr-3 font-medium">Медосмотр до</th>
                       <th className="py-2 pr-3 font-medium">Статус</th>
                       <th className="py-2 text-right font-medium">Действия</th>
                     </tr>
@@ -582,6 +588,8 @@ export default function Crew() {
                         <td className="py-2 pr-3 text-muted-foreground">{e.position}</td>
                         <td className="py-2 pr-3 text-muted-foreground">{objName(e.objectId) || "не указан"}</td>
                         <td className="num py-2 pr-3 whitespace-nowrap text-muted-foreground">{e.phone || "—"}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap">{e.workStatus === "sample_prep" ? "Работа в пробоподготовке" : e.workStatus === "shift" ? "Вахтовый метод" : "Работа в офисе"}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap">{e.medicalExamEndDate || "Не указана"}</td>
                         <td className="py-2 pr-3">
                           <Select
                             value={e.manualStatus || "auto"}
@@ -1012,6 +1020,21 @@ export default function Crew() {
                   placeholder="+7 ..."
                   data-testid="input-phone"
                 />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium">Место работы</label>
+                <Select value={empForm.workStatus} onValueChange={(v) => setEmpForm({ ...empForm, workStatus: v })}>
+                  <SelectTrigger data-testid="select-work-status"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="office">Работа в офисе</SelectItem>
+                    <SelectItem value="sample_prep">Работа в пробоподготовке</SelectItem>
+                    <SelectItem value="shift">Вахтовый метод</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium">Дата окончания медосмотра</label>
+                <Input type="date" value={empForm.medicalExamEndDate} onChange={(e) => setEmpForm({ ...empForm, medicalExamEndDate: e.target.value })} data-testid="input-medical-exam-end" />
               </div>
             </div>
             {empError && <ErrorBox text={empError} />}

@@ -33,6 +33,7 @@ import { buildEstimateAnalytics } from "./estimates";
 import { seedEstimates } from "./seedEstimates";
 import { registerPbkRoutes } from "./pbkroutes";
 import { registerSectionRoutes } from "./sections";
+import { registerControlRoutes } from "./control";
 import { resetConfig } from "./sectionsconfig";
 import { ensurePbkLoaded } from "./pbkload";
 import {
@@ -77,6 +78,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   ensurePbkLoaded();
   registerUserRoutes(app);
   registerSectionRoutes(app);
+  registerControlRoutes(app);
 
   // ---------- Умный импорт «живых» сводок ----------
   app.post("/api/smart/upload", upload.single("file"), async (req, res) => {

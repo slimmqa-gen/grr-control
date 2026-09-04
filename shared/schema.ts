@@ -165,6 +165,8 @@ export const employees = sqliteTable("employees", {
   phone: text("phone").notNull().default(""),
   importId: integer("import_id").notNull().default(0),
   manualStatus: text("manual_status").notNull().default(""),
+  medicalExamEndDate: text("medical_exam_end_date").notNull().default(""),
+  workStatus: text("work_status").notNull().default("office"),
 });
 
 /** Отпуска, больничные, командировки, обучение — с датами начала и окончания */
@@ -631,6 +633,8 @@ export const insertEmployeeSchema = createInsertSchema(employees).omit({ id: tru
   brigadeId: z.coerce.number().default(0),
   phone: z.string().default(""),
   importId: z.coerce.number().default(0),
+  medicalExamEndDate: z.string().default(""),
+  workStatus: z.enum(["office", "sample_prep", "shift"]).default("office"),
 });
 export const insertPositionSchema = createInsertSchema(positions).omit({ id: true }).extend({
   name: z.string().trim().min(1, "Укажите название должности"),
@@ -798,6 +802,7 @@ export type User = typeof users.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;
 
 export const SECTIONS = [
+  "control",
   "dashboard", "summary", "import", "profiles", "templates", "pbk", "drilling", "sampleprep", "core",
   "economics", "fuel", "crew", "references", "settings", "users", "setup", "install",
 ] as const;
@@ -829,13 +834,13 @@ export const ROLES: Record<string, RoleDef> = {
   geolog: {
     label: "Начальник участка / геолог",
     hint: "Только свои объекты: рапорты, керн, распиловка, пробы. Без экономики и цен",
-    sections: ["dashboard", "summary", "import", "profiles", "pbk", "drilling", "sampleprep", "core", "install"],
+    sections: ["control", "dashboard", "summary", "import", "profiles", "pbk", "drilling", "sampleprep", "core", "install"],
     write: true, finance: false, manageUsers: false, allObjects: false, personal: true,
   },
   lab: {
     label: "Пробоподготовка / лаборатория",
     hint: "Только раздел пробоподготовки: журнал проб, этапы, партии, результаты",
-    sections: ["sampleprep", "install"],
+    sections: ["control", "sampleprep", "install"],
     write: true, finance: false, manageUsers: false, allObjects: true, personal: false,
   },
   supply: {
@@ -847,7 +852,7 @@ export const ROLES: Record<string, RoleDef> = {
   viewer: {
     label: "Наблюдатель (заказчик/инвестор)",
     hint: "Только чтение дашборда и производственных показателей",
-    sections: ["dashboard", "summary", "drilling", "install"],
+    sections: ["control", "dashboard", "summary", "drilling", "install"],
     write: false, finance: false, manageUsers: false, allObjects: true, personal: false,
   },
 };
