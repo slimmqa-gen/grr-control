@@ -41,7 +41,6 @@ const STATUS_TEXT: Record<Status, string> = {
   sick: "Больничный",
   trip: "Командировка",
   study: "Обучение",
-  between: "На межвахте",
 };
 const STATUS_LEVEL: Record<Status, Level> = {
   onshift: "ok",
@@ -51,7 +50,6 @@ const STATUS_LEVEL: Record<Status, Level> = {
   sick: "warn",
   trip: "warn",
   study: "warn",
-  between: "warn",
 };
 
 export default function Crew() {

@@ -426,6 +426,7 @@ const isOldXlsBuffer = (buffer: Buffer, fileName: string) =>
 /** Разбор файла заказчика: предлагается шаблон, повторяющий его структуру */
 export async function proposeFromFile(buffer: Buffer, fileName: string) {
   let matrix: any[][] = [];
+  let firstSheetName = "Лист1";
 
   if (/\.csv$/i.test(fileName)) {
     const text = buffer.toString("utf8").replace(/^\uFEFF/, "");
@@ -443,6 +444,7 @@ export async function proposeFromFile(buffer: Buffer, fileName: string) {
     }
     const ws = xwb.Sheets[xwb.SheetNames[0]];
     if (!ws) throw new Error("В файле не найдено ни одного листа");
+    firstSheetName = xwb.SheetNames[0] || "Лист1";
     matrix = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1, raw: false, defval: null }) as any[][];
   } else {
     let wb: ExcelJS.Workbook;
@@ -457,6 +459,7 @@ export async function proposeFromFile(buffer: Buffer, fileName: string) {
     }
     const sheet = wb.worksheets[0];
     if (!sheet) throw new Error("В файле не найдено ни одного листа");
+    firstSheetName = sheet.name || "Лист1";
     sheet.eachRow((row) => {
       const raw = (row.values as any[]).slice(1);
       const dense: any[] = [];
@@ -465,8 +468,7 @@ export async function proposeFromFile(buffer: Buffer, fileName: string) {
     });
   }
 
-  if (!matrix.length) throw new Error("В файле не найдено ни одного листа с данными");
-  if (!matrix.length) throw new Error("На первом листе нет данных");
+  if (!matrix.length) throw new Error("На первом листе файла нет данных");
 
   // Строка шапки: первая строка, где не меньше двух непустых текстовых ячеек
   let headerIdx = 0;
@@ -526,7 +528,7 @@ export async function proposeFromFile(buffer: Buffer, fileName: string) {
 
   return {
     fileName,
-    sheetName: (sheet.name || "Лист1").slice(0, 31),
+    sheetName: firstSheetName.slice(0, 31),
     headerRow: headerIdx + 1,
     title: `Шаблон по файлу «${fileName.replace(/\.(xlsx|xlsm|xls|csv)$/i, "")}»`,
     baseType,
