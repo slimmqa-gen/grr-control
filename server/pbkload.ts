@@ -62,11 +62,33 @@ export type LoadReport = {
   counts: Record<string, number>;
   mirrored: Record<string, number>;
   at: string;
+  /** Пояснение, если загружать было нечего */
+  note?: string;
 };
 
-/** Разбор и загрузка всех файлов каталога */
+/** Файлы сводок в каталоге */
+function pbkFileNames(dir: string): string[] {
+  return fs.existsSync(dir)
+    ? fs.readdirSync(dir).filter((f) => /\.xlsx?$/i.test(f) && !f.startsWith("~$")).sort()
+    : [];
+}
+
+/**
+ * Разбор и загрузка всех файлов каталога.
+ *
+ * ВАЖНО: если файлов нет, загрузка не выполняется вообще.
+ * Иначе пустая папка приводила к полной очистке рабочих таблиц
+ * (сотрудники, рапорты, станки, справочники) без замены данных.
+ */
 export function loadPbkFiles(dir = PBK_DIR): LoadReport {
-  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /\.xlsx?$/i.test(f) && !f.startsWith("~$")).sort() : [];
+  const files = pbkFileNames(dir);
+  if (!files.length) {
+    return {
+      org: ORG_NAME, at: new Date().toISOString(), counts: pbkCounts(),
+      mirrored: {}, files: [],
+      note: `В папке ${dir} нет файлов сводок (.xlsx). Данные программы не изменены.`,
+    } as LoadReport;
+  }
   const results: ParseResult[] = [];
   for (const f of files) {
     try {
@@ -104,6 +126,14 @@ export function loadPbkFiles(dir = PBK_DIR): LoadReport {
 
 /** Перенос реальных данных в рабочие таблицы программы вместо демо-набора */
 export function mirrorToWorkTables(): Record<string, number> {
+  // Защита от потери данных: полная очистка допустима только тогда,
+  // когда есть чем заменить — иначе программа осталась бы пустой.
+  const haveShifts = (pdb.prepare(`SELECT COUNT(*) c FROM pbk_shifts`).get() as any).c;
+  const haveGeo = (pdb.prepare(`SELECT COUNT(*) c FROM pbk_geo`).get() as any).c;
+  if (!haveShifts && !haveGeo) {
+    console.warn("[ПБК] Перенос в рабочие таблицы пропущен: загруженных сводок нет. Данные программы сохранены.");
+    return {};
+  }
   storage.fullReset();
 
   const shifts = pdb.prepare(`SELECT * FROM pbk_shifts`).all() as any[];
@@ -222,7 +252,9 @@ export function ensurePbkLoaded() {
   try {
     const c = (pdb.prepare(`SELECT COUNT(*) c FROM pbk_shifts`).get() as any).c;
     if (c > 0) return false;
-    if (!fs.existsSync(PBK_DIR)) return false;
+    // Пустая папка — ничего не делаем. Раньше это приводило к очистке рабочих таблиц
+    // при каждом перезапуске программы.
+    if (!pbkFileNames(PBK_DIR).length) return false;
     loadPbkFiles();
     return true;
   } catch (e) {

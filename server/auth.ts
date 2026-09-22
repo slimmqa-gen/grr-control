@@ -19,6 +19,14 @@ declare global {
 const nowIso = () => new Date().toISOString();
 
 /**
+ * Сколько дней действует вход без повторного ввода пароля.
+ * Меняется переменной окружения SESSION_DAYS (по умолчанию 30 дней).
+ */
+const SESSION_DAYS = Math.max(1, Number(process.env.SESSION_DAYS || 30));
+const SESSION_MS = SESSION_DAYS * 24 * 60 * 60 * 1000;
+const expiryIso = () => new Date(Date.now() + SESSION_MS).toISOString();
+
+/**
  * Аварийное восстановление доступа.
  * Если в программе не осталось ни одной активной учётной записи директора
  * (например, её случайно удалили или отключили), она восстанавливается
@@ -55,9 +63,42 @@ export function ensureDirector() {
   console.log("[Восстановление доступа] Учётная запись директора создана заново: логин director, пароль director. Смените пароль после входа.");
 }
 
+/** Уборка просроченных входов при запуске программы */
+export function cleanupSessions() {
+  try {
+    const n = storage.deleteExpiredSessions();
+    if (n > 0) console.log(`[Вход] Закрыто просроченных сессий: ${n}. Срок действия входа — ${SESSION_DAYS} дн.`);
+  } catch { /* уборка не должна мешать запуску */ }
+}
+
+/**
+ * Предупреждение о стандартных паролях.
+ * Пароль, совпадающий с логином, — открытая дверь на сервере, доступном из интернета.
+ */
+export function warnWeakPasswords() {
+  try {
+    const weak = storage.users()
+      .filter((u) => u.active === 1)
+      .filter((u) => { try { return bcrypt.compareSync(u.login, u.passwordHash); } catch { return false; } })
+      .map((u) => u.login);
+    if (weak.length) {
+      console.warn(
+        `[Безопасность] Пароль совпадает с логином у учётных записей: ${weak.join(", ")}. ` +
+        "Смените пароли в разделе «Пользователи» — программа доступна из интернета.",
+      );
+    }
+  } catch { /* проверка не должна мешать запуску */ }
+}
+
 /** Создание демо-пользователей при первом запуске */
 export function seedUsers() {
   if (storage.users().length > 0) { ensureDirector(); return; }
+  // В рабочем режиме демо-набор (analyst/geolog/lab/supply/viewer с паролями,
+  // равными логинам) не создаётся — только директор для первого входа.
+  if (process.env.NODE_ENV === "production") {
+    ensureDirector();
+    return;
+  }
   const objs = storage.objects();
   DEMO_USERS.forEach((u) => {
     const objectIds = u.role === "geolog" && objs.length ? [objs[0].id] : [];
@@ -263,6 +304,8 @@ const PUBLIC = ["/api/auth/login", "/api/auth/demo-users"];
 
 export function installAuth(app: Express) {
   seedUsers();
+  cleanupSessions();
+  warnWeakPasswords();
 
   app.post("/api/auth/login", (req, res) => {
     const login = String(req.body?.login ?? "").trim();
@@ -277,7 +320,7 @@ export function installAuth(app: Express) {
     }
     if (!u.active) return res.status(403).json({ error: "Учётная запись отключена. Обратитесь к директору." });
     const token = crypto.randomUUID();
-    storage.createSession(token, u.id);
+    storage.createSession(token, u.id, expiryIso());
     storage.updateUser(u.id, { lastLogin: nowIso() });
     const au = toAuthUser({ ...u, lastLogin: nowIso() });
     storage.addAudit({
@@ -338,6 +381,14 @@ export function currentUser(req: Request): AuthUser | null {
   if (!token) return null;
   const s = storage.sessionByToken(token);
   if (!s) return null;
+  // Просроченный или старый бессрочный вход закрываем: нужен повторный ввод пароля
+  const expires = s.expiresAt ? Date.parse(s.expiresAt) : 0;
+  if (!expires || Number.isNaN(expires) || expires < Date.now()) {
+    storage.deleteSession(token);
+    return null;
+  }
+  // Пока человек работает, вход продлевается: срок обновляем во второй половине его жизни
+  if (expires - Date.now() < SESSION_MS / 2) storage.touchSession(token, expiryIso());
   const u = storage.userById(s.userId);
   if (!u || !u.active) return null;
   const au = toAuthUser(u);
