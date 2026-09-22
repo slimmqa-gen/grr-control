@@ -177,6 +177,9 @@ export const employeeEvents = sqliteTable("employee_events", {
   startDate: text("start_date").notNull(),
   endDate: text("end_date").notNull(),
   destination: text("destination").notNull().default(""),
+  // участок командировки берётся из справочника объектов: связь по идентификатору
+  // позволяет переименовать участок без расхождений в кадровых событиях
+  destinationObjectId: integer("destination_object_id").notNull().default(0),
   note: text("note").notNull().default(""),
   createdAt: text("created_at").notNull().default(""),
 });
@@ -201,9 +204,12 @@ export const insertEmployeeEventSchema = createInsertSchema(employeeEvents).omit
   startDate: z.string().min(1, "Укажите дату начала"),
   endDate: z.string().min(1, "Укажите дату окончания"),
   destination: z.string().default(""),
+  destinationObjectId: z.coerce.number().default(0),
   note: z.string().default(""),
 }).refine((v) => v.endDate >= v.startDate, {
   message: "Дата окончания не может быть раньше даты начала", path: ["endDate"],
+}).refine((v) => v.kind !== "trip" || Number(v.destinationObjectId) > 0 || v.destination.trim().length > 0, {
+  message: "Для командировки выберите участок из справочника", path: ["destinationObjectId"],
 });
 
 /** Заметки и напоминания на дашборде: произвольная запись с необязательной датой напоминания */

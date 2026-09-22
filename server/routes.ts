@@ -4,6 +4,7 @@ import multer from "multer";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
 import { storage, restoreDemoData } from "./storage";
 import { buildAnalytics } from "./analytics";
+import { employeeTimesheet, allEmployeesTimesheet } from "./hr";
 import { buildWorkbook, buildSummaryWorkbook, type SheetKey } from "./excel";
 import {
   parseUpload, analyzeRows, commitImport, suggestMapping, buildTemplate,
@@ -732,7 +733,49 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e) { fail(res, e); }
   });
   app.patch("/api/shifts/:id", (req, res) => {
-    try { res.json(storage.updateShift(Number(req.params.id), req.body)); } catch (e) { fail(res, e); }
+    try {
+      const patch: any = {};
+      // фактические даты вахты можно править: реальный заезд и выезд часто отличаются от графика
+      const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+      const current = storage.shifts().find((s: any) => s.id === Number(req.params.id));
+      if (!current) throw new Error("Вахта не найдена");
+      if (req.body?.startDate !== undefined) {
+        const v = String(req.body.startDate).slice(0, 10);
+        if (!dateRe.test(v)) throw new Error("Укажите фактическую дату заезда");
+        patch.startDate = v;
+      }
+      if (req.body?.endDate !== undefined) {
+        const v = String(req.body.endDate).slice(0, 10);
+        if (!dateRe.test(v)) throw new Error("Укажите фактическую дату выезда");
+        patch.endDate = v;
+      }
+      const start = patch.startDate ?? current.startDate;
+      const end = patch.endDate ?? current.endDate;
+      if (end < start) throw new Error("Дата выезда не может быть раньше даты заезда");
+      if (req.body?.objectId !== undefined) patch.objectId = Number(req.body.objectId) || 0;
+      if (req.body?.cycleType !== undefined) patch.cycleType = String(req.body.cycleType).trim();
+      if (req.body?.replacementAssigned !== undefined) patch.replacementAssigned = Number(req.body.replacementAssigned) ? 1 : 0;
+      if (!Object.keys(patch).length) throw new Error("Нечего менять");
+      const updated = storage.updateShift(Number(req.params.id), patch);
+      if (patch.startDate || patch.endDate)
+        audit(req, "Изменение дат вахты", "shifts", `#${req.params.id}: ${start} — ${end}`);
+      res.json(updated);
+    } catch (e) { fail(res, e); }
+  });
+
+  // ---------- Кадровая аналитика: взаимоисключающие дни по состояниям ----------
+  app.get("/api/hr/timesheet/:id/:year", (req, res) => {
+    try {
+      const year = Number(req.params.year) || new Date().getFullYear();
+      res.json(employeeTimesheet(Number(req.params.id), year));
+    } catch (e) { fail(res, e); }
+  });
+
+  app.get("/api/hr/timesheet-all/:year", (req, res) => {
+    try {
+      const year = Number(req.params.year) || new Date().getFullYear();
+      res.json(allEmployeesTimesheet(year));
+    } catch (e) { fail(res, e); }
   });
   app.delete("/api/shifts/:id", (req, res) => { storage.deleteShift(Number(req.params.id)); res.json({ ok: true }); });
 

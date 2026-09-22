@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -21,6 +21,29 @@ import { cn } from "@/lib/utils";
 
 const CYCLES = ["30/30", "60/30", "15/15", "45/45", "60/60"];
 const NO_OBJECT = "0";
+const OTHER_PLACE = "other";
+
+/** Состояния кадровой аналитики: один день относится только к одному состоянию */
+const HR_STATE_ORDER = ["work", "onshift", "between", "trip", "vacation", "sick", "study", "unassigned"] as const;
+const HR_STATE_LABELS: Record<string, string> = {
+  work: "Работа",
+  onshift: "На вахте",
+  between: "Межвахта",
+  trip: "Командировка",
+  vacation: "Отпуск",
+  sick: "Больничный",
+  study: "Обучение",
+  unassigned: "Без статуса",
+};
+
+/** Медосмотр: за 30 дней до окончания — предупреждение, после окончания — просрочка */
+function medExamInfo(date: string, today: string): { text: string; level: Level } {
+  if (!date) return { text: "не указан", level: "bad" };
+  const days = Math.round((new Date(date + "T00:00:00").getTime() - new Date(today + "T00:00:00").getTime()) / 86400000);
+  if (days < 0) return { text: `просрочен ${Math.abs(days)} дн.`, level: "bad" };
+  if (days <= 30) return { text: `до ${new Date(date).toLocaleDateString("ru-RU")} (${days} дн.)`, level: "warn" };
+  return { text: new Date(date).toLocaleDateString("ru-RU"), level: "ok" };
+}
 const OWN_POSITION = "__own__";
 const OWN_CYCLE = "__own__";
 
@@ -89,8 +112,20 @@ export default function Crew() {
 
   const [absDialog, setAbsDialog] = useState<{ open: boolean; id: number | null }>({ open: false, id: null });
   const [absForm, setAbsForm] = useState({
-    employeeId: "", kind: "vacation", startDate: todayIso(), endDate: todayIso(), destination: "", note: "",
+    employeeId: "", kind: "vacation", startDate: todayIso(), endDate: todayIso(),
+    destinationObjectId: NO_OBJECT, destination: "", note: "",
   });
+
+  // редактирование фактических дат вахты
+  const [shiftEditDialog, setShiftEditDialog] = useState<{ open: boolean; id: number | null; fio: string }>({ open: false, id: null, fio: "" });
+  const [shiftEditForm, setShiftEditForm] = useState({ startDate: "", endDate: "" });
+  const [shiftEditError, setShiftEditError] = useState("");
+
+  // кадровая аналитика по сотруднику
+  const [tsDialog, setTsDialog] = useState<{ open: boolean; id: number | null }>({ open: false, id: null });
+  const [tsYear, setTsYear] = useState(String(new Date().getFullYear()));
+  const [summaryYear, setSummaryYear] = useState(String(new Date().getFullYear()));
+  const [showSummary, setShowSummary] = useState(false);
   const [absError, setAbsError] = useState("");
   const [absDelDialog, setAbsDelDialog] = useState<{ open: boolean; id: number | null; name: string }>({ open: false, id: null, name: "" });
   const [absKindFilter, setAbsKindFilter] = useState("all");
@@ -147,12 +182,14 @@ export default function Crew() {
 
   const saveAbsence = useMutation({
     mutationFn: async () => {
+      const byRef = absForm.kind === "trip" && absForm.destinationObjectId !== OTHER_PLACE;
       const body = {
         employeeId: Number(absForm.employeeId) || 0,
         kind: absForm.kind,
         startDate: absForm.startDate,
         endDate: absForm.endDate,
-        destination: absForm.destination.trim(),
+        destinationObjectId: byRef ? Number(absForm.destinationObjectId) || 0 : 0,
+        destination: byRef ? "" : absForm.destination.trim(),
         note: absForm.note.trim(),
       };
       if (absDialog.id) return (await apiRequest("PATCH", `/api/employee-events/${absDialog.id}`, body)).json();
@@ -177,16 +214,26 @@ export default function Crew() {
 
   const openAddAbsence = () => {
     setAbsError("");
-    setAbsForm({ employeeId: "", kind: "vacation", startDate: todayIso(), endDate: todayIso(), destination: "", note: "" });
+    setAbsForm({
+      employeeId: "", kind: "vacation", startDate: todayIso(), endDate: todayIso(),
+      destinationObjectId: NO_OBJECT, destination: "", note: "",
+    });
     setAbsDialog({ open: true, id: null });
   };
   const openEditAbsence = (ev: any) => {
     setAbsError("");
     setAbsForm({
       employeeId: String(ev.employeeId), kind: ev.kind, startDate: ev.startDate, endDate: ev.endDate,
+      destinationObjectId: ev.destinationObjectId ? String(ev.destinationObjectId) : (ev.destination ? OTHER_PLACE : NO_OBJECT),
       destination: ev.destination ?? "", note: ev.note ?? "",
     });
     setAbsDialog({ open: true, id: ev.id });
+  };
+
+  const openEditShiftDates = (r: any) => {
+    setShiftEditError("");
+    setShiftEditForm({ startDate: r.startDate, endDate: r.endDate });
+    setShiftEditDialog({ open: true, id: r.shiftId ?? r.id, fio: r.fio });
   };
 
   const rows = useMemo(() => {
@@ -326,6 +373,37 @@ export default function Crew() {
       toast({ title: "Вахта снята" });
     },
   });
+
+  /** Фактические даты вахты: реальные заезд и выезд часто отличаются от графика */
+  const saveShiftDates = useMutation({
+    mutationFn: async () =>
+      (await apiRequest("PATCH", `/api/shifts/${shiftEditDialog.id}`, {
+        startDate: shiftEditForm.startDate, endDate: shiftEditForm.endDate,
+      })).json(),
+    onSuccess: () => {
+      queryClient.invalidateQueries();
+      setShiftEditDialog({ open: false, id: null, fio: "" });
+      toast({ title: "Фактические даты вахты обновлены" });
+    },
+    onError: (e: any) => setShiftEditError(String(e.message)),
+  });
+
+  // месячная и годовая аналитика по выбранному сотруднику
+  const timesheet = useQuery<any>({
+    queryKey: ["/api/hr/timesheet", String(tsDialog.id ?? 0), tsYear],
+    enabled: tsDialog.open && !!tsDialog.id,
+  });
+
+  // годовые итоги по всем сотрудникам
+  const summary = useQuery<any>({
+    queryKey: ["/api/hr/timesheet-all", summaryYear],
+    enabled: showSummary,
+  });
+
+  const yearOptions = (() => {
+    const y = new Date().getFullYear();
+    return [String(y), String(y - 1), String(y - 2)];
+  })();
 
   if (isLoading) return <Loading rows={4} />;
   if (error || !data) return <ErrorBox text="Не удалось загрузить данные по сотрудникам. Обновите страницу." />;
@@ -491,13 +569,12 @@ export default function Crew() {
                   <SelectContent>
                     <SelectItem value="all">Все статусы</SelectItem>
                     <SelectItem value="onshift">На вахте</SelectItem>
-                    <SelectItem value="between">Вахтовый метод</SelectItem>
+                    <SelectItem value="between">На межвахте</SelectItem>
                     <SelectItem value="none">Вахта не назначена</SelectItem>
                     <SelectItem value="vacation">Отпуск</SelectItem>
                     <SelectItem value="sick">Больничный</SelectItem>
                     <SelectItem value="trip">Командировка</SelectItem>
                     <SelectItem value="study">Обучение</SelectItem>
-                              <SelectItem value="between">Вахтовый метод</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -584,7 +661,18 @@ export default function Crew() {
                         <td className="py-2 pr-3 text-muted-foreground">{e.position}</td>
                         <td className="py-2 pr-3 text-muted-foreground">{objName(e.objectId) || "не указан"}</td>
                         <td className="num py-2 pr-3 whitespace-nowrap text-muted-foreground">{e.phone || "—"}</td>
-                        <td className="py-2 pr-3">{e.workStatus === "pp" ? "Работа в ПП" : e.workStatus === "between" ? "Вахтовый метод" : "Работа в офисе"}</td><td className="py-2 pr-3">{e.medicalExamEndDate || "—"}</td>
+                        <td className="py-2 pr-3">{e.workStatus === "pp" ? "Работа в ПП" : e.workStatus === "between" ? "Вахтовый метод" : "Работа в офисе"}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          {(() => {
+                            const m = medExamInfo(e.medicalExamEndDate ?? "", today);
+                            return (
+                              <Badge variant="outline" className={cn("border text-[11px]", levelBadge[m.level])} data-testid={`badge-medexam-${e.id}`}>
+                                <Stethoscope className="mr-1 h-3 w-3" />
+                                {m.text}
+                              </Badge>
+                            );
+                          })()}
+                        </td>
                         <td className="py-2 pr-3">
                           <Select
                             value={e.manualStatus || "auto"}
@@ -625,6 +713,16 @@ export default function Crew() {
                             <Button
                               variant="ghost"
                               size="icon"
+                              aria-label="Аналитика по сотруднику"
+                              title="Месяцы и год: работа, вахта, межвахта, командировки, отпуск, больничный, обучение"
+                              onClick={() => { setTsYear(String(new Date().getFullYear())); setTsDialog({ open: true, id: e.id }); }}
+                              data-testid={`button-employee-analytics-${e.id}`}
+                            >
+                              <BarChart3 className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
                               aria-label="Изменить сотрудника"
                               onClick={() => openEdit(e)}
                               data-testid={`button-edit-employee-${e.id}`}
@@ -642,6 +740,67 @@ export default function Crew() {
                             </Button>
                           </div>
                         </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Section>
+
+          <Section
+            className="mb-4"
+            title="Годовые итоги по сотрудникам"
+            description="Один календарный день учитывается только в одном состоянии, поэтому суммы не дублируются"
+          >
+            <div className="mb-3 flex flex-wrap items-end gap-3">
+              <div className="w-32">
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Год</label>
+                <Select value={summaryYear} onValueChange={setSummaryYear}>
+                  <SelectTrigger data-testid="select-summary-year"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {yearOptions.map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                size="sm"
+                variant={showSummary ? "outline" : "default"}
+                onClick={() => setShowSummary(!showSummary)}
+                data-testid="button-toggle-summary"
+              >
+                <BarChart3 className="mr-2 h-4 w-4" />
+                {showSummary ? "Скрыть таблицу" : "Показать итоги"}
+              </Button>
+            </div>
+            {!showSummary ? (
+              <Empty text="Нажмите «Показать итоги»: для каждого сотрудника будет посчитано число дней по работе, вахте, межвахте, командировкам, отпуску, больничному и обучению." />
+            ) : summary.isLoading ? (
+              <Loading rows={3} />
+            ) : summary.error ? (
+              <ErrorBox text="Не удалось посчитать итоги по сотрудникам." />
+            ) : !(summary.data?.rows ?? []).length ? (
+              <Empty text="Сотрудники не внесены." />
+            ) : (
+              <div className="sticky-head max-h-[60vh] overflow-auto">
+                <table className="w-full min-w-[860px] text-sm" data-testid="table-hr-summary">
+                  <thead>
+                    <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
+                      <th className="py-2 pr-3 font-medium">ФИО</th>
+                      {HR_STATE_ORDER.map((s) => (
+                        <th key={s} className="py-2 pr-3 text-right font-medium">{HR_STATE_LABELS[s]}</th>
+                      ))}
+                      <th className="py-2 text-right font-medium">Всего дней</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(summary.data?.rows ?? []).map((r: any) => (
+                      <tr key={r.employeeId} className="border-b last:border-0" data-testid={`row-hr-summary-${r.employeeId}`}>
+                        <td className="py-2 pr-3 font-medium whitespace-nowrap">{r.fio}</td>
+                        {HR_STATE_ORDER.map((s) => (
+                          <td key={s} className="num py-2 pr-3 text-right">{nf(r[s] ?? 0)}</td>
+                        ))}
+                        <td className="num py-2 text-right font-medium">{nf(r.days ?? 0)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -778,15 +937,27 @@ export default function Crew() {
                             )}
                           </td>
                           <td className="py-2 text-right">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label="Снять вахту"
-                              onClick={() => deleteShift.mutate(r.shiftId)}
-                              data-testid={`button-delete-shift-${r.shiftId}`}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                            <div className="flex justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label="Изменить фактические даты вахты"
+                                title="Изменить фактические даты заезда и выезда"
+                                onClick={() => openEditShiftDates(r)}
+                                data-testid={`button-edit-shift-${r.shiftId}`}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label="Снять вахту"
+                                onClick={() => deleteShift.mutate(r.shiftId)}
+                                data-testid={`button-delete-shift-${r.shiftId}`}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -861,7 +1032,7 @@ export default function Crew() {
                   <SelectItem value="sick">Больничный</SelectItem>
                   <SelectItem value="trip">Командировка</SelectItem>
                   <SelectItem value="study">Обучение</SelectItem>
-                              <SelectItem value="between">На межвахте</SelectItem>
+                  <SelectItem value="between">На межвахте</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -882,7 +1053,7 @@ export default function Crew() {
                       <th className="py-2 pr-3 font-medium">Тип</th>
                       <th className="py-2 pr-3 font-medium">С</th>
                       <th className="py-2 pr-3 font-medium">По</th>
-                      <th className="py-2 pr-3 font-medium">Куда / примечание</th>
+                      <th className="py-2 pr-3 font-medium">Участок / примечание</th>
                       <th className="py-2 pr-3 font-medium">Статус</th>
                       <th className="py-2 text-right font-medium">Действия</th>
                     </tr>
@@ -919,8 +1090,11 @@ export default function Crew() {
                           </td>
                           <td className="num py-2 pr-3 whitespace-nowrap">{ruDate(ev.startDate)}</td>
                           <td className="num py-2 pr-3 whitespace-nowrap">{isOpenEnded ? "—" : ruDate(ev.endDate)}</td>
-                          <td className="py-2 pr-3 text-muted-foreground max-w-[220px] truncate" title={ev.destination || ev.note}>
-                            {ev.destination || ev.note || "—"}
+                          <td
+                            className="py-2 pr-3 text-muted-foreground max-w-[220px] truncate"
+                            title={objName(ev.destinationObjectId) || ev.destination || ev.note}
+                          >
+                            {objName(ev.destinationObjectId) || ev.destination || ev.note || "—"}
                           </td>
                           <td className="py-2 pr-3">
                             <Badge variant="outline" className={cn("border text-[11px] whitespace-nowrap", levelBadge[badgeLevel])}>
@@ -1119,6 +1293,124 @@ export default function Crew() {
         </DialogContent>
       </Dialog>
 
+      {/* ---------- Диалог фактических дат вахты ---------- */}
+      <Dialog
+        open={shiftEditDialog.open}
+        onOpenChange={(v) => setShiftEditDialog({ open: v, id: v ? shiftEditDialog.id : null, fio: v ? shiftEditDialog.fio : "" })}
+      >
+        <DialogContent className="max-w-md" data-testid="dialog-edit-shift">
+          <DialogHeader>
+            <DialogTitle>Фактические даты вахты</DialogTitle>
+            <DialogDescription>
+              {shiftEditDialog.fio} — укажите реальные даты заезда и выезда — они участвуют в расчёте дней и календаре вахт.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium">Дата заезда *</label>
+              <Input
+                type="date"
+                value={shiftEditForm.startDate}
+                onChange={(e) => setShiftEditForm({ ...shiftEditForm, startDate: e.target.value })}
+                data-testid="input-edit-shift-start"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium">Дата выезда *</label>
+              <Input
+                type="date"
+                value={shiftEditForm.endDate}
+                onChange={(e) => setShiftEditForm({ ...shiftEditForm, endDate: e.target.value })}
+                data-testid="input-edit-shift-end"
+              />
+            </div>
+          </div>
+          {shiftEditError && <div className="mt-2"><ErrorBox text={shiftEditError} /></div>}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShiftEditDialog({ open: false, id: null, fio: "" })} data-testid="button-cancel-edit-shift">
+              Отмена
+            </Button>
+            <Button
+              onClick={() => {
+                setShiftEditError("");
+                if (!shiftEditForm.startDate || !shiftEditForm.endDate) return setShiftEditError("Укажите обе даты.");
+                if (shiftEditForm.endDate < shiftEditForm.startDate) return setShiftEditError("Дата выезда раньше даты заезда.");
+                saveShiftDates.mutate();
+              }}
+              disabled={saveShiftDates.isPending}
+              data-testid="button-save-edit-shift"
+            >
+              Сохранить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------- Диалог аналитики по сотруднику ---------- */}
+      <Dialog open={tsDialog.open} onOpenChange={(v) => setTsDialog({ open: v, id: v ? tsDialog.id : null })}>
+        <DialogContent className="max-w-4xl" data-testid="dialog-employee-analytics">
+          <DialogHeader>
+            <DialogTitle>
+              Аналитика по сотруднику{timesheet.data?.fio ? `: ${timesheet.data.fio}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              Дни по месяцам и за год. Один день относится только к одному состоянию, будущие дни не считаются.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mb-2 w-32">
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">Год</label>
+            <Select value={tsYear} onValueChange={setTsYear}>
+              <SelectTrigger data-testid="select-timesheet-year"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {yearOptions.map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          {timesheet.isLoading ? (
+            <Loading rows={4} />
+          ) : timesheet.error ? (
+            <ErrorBox text="Не удалось посчитать аналитику по сотруднику." />
+          ) : timesheet.data ? (
+            <div className="sticky-head max-h-[55vh] overflow-auto">
+              <table className="w-full text-sm" data-testid="table-timesheet">
+                <thead>
+                  <tr className="border-b text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="py-2 pr-2 font-medium">Месяц</th>
+                    {HR_STATE_ORDER.map((s) => (
+                      <th key={s} className="py-2 pr-2 text-right font-medium">{HR_STATE_LABELS[s]}</th>
+                    ))}
+                    <th className="py-2 text-right font-medium">Всего</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(timesheet.data.months ?? []).map((m: any) => (
+                    <tr key={m.month} className="border-b last:border-0" data-testid={`row-timesheet-${m.month}`}>
+                      <td className="py-2 pr-2 whitespace-nowrap">{m.label}</td>
+                      {HR_STATE_ORDER.map((s) => (
+                        <td key={s} className={cn("num py-2 pr-2 text-right", !m[s] && "text-muted-foreground")}>{nf(m[s] ?? 0)}</td>
+                      ))}
+                      <td className="num py-2 text-right">{nf(m.days ?? 0)}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-t-2 font-medium" data-testid="row-timesheet-total">
+                    <td className="py-2 pr-2 whitespace-nowrap">Итого за {timesheet.data.year}</td>
+                    {HR_STATE_ORDER.map((s) => (
+                      <td key={s} className="num py-2 pr-2 text-right">{nf(timesheet.data.total?.[s] ?? 0)}</td>
+                    ))}
+                    <td className="num py-2 text-right">{nf(timesheet.data.total?.days ?? 0)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTsDialog({ open: false, id: null })} data-testid="button-close-analytics">
+              Закрыть
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ---------- Диалог массового изменения ---------- */}
       <Dialog open={bulkDialog !== null} onOpenChange={(v) => !v && setBulkDialog(null)}>
         <DialogContent className="max-w-md" data-testid="dialog-bulk">
@@ -1205,7 +1497,7 @@ export default function Crew() {
                   <SelectItem value="sick">Больничный</SelectItem>
                   <SelectItem value="trip">Командировка</SelectItem>
                   <SelectItem value="study">Обучение</SelectItem>
-                              <SelectItem value="between">На межвахте</SelectItem>
+                  <SelectItem value="between">На межвахте</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1242,13 +1534,31 @@ export default function Crew() {
             </div>
             {absForm.kind === "trip" && (
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">Куда (город/объект)</label>
-                <Input
-                  value={absForm.destination}
-                  onChange={(e) => setAbsForm({ ...absForm, destination: e.target.value })}
-                  placeholder="Например: Красноярск, база снабжения"
-                  data-testid="input-absence-destination"
-                />
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Участок командировки *</label>
+                <Select
+                  value={absForm.destinationObjectId}
+                  onValueChange={(v) => setAbsForm({ ...absForm, destinationObjectId: v })}
+                >
+                  <SelectTrigger data-testid="select-absence-destination-object">
+                    <SelectValue placeholder="Выберите участок" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {objects.map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>)}
+                    <SelectItem value={OTHER_PLACE}>Другое место…</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Участок берётся из справочника объектов — при переименовании участка запись останется верной.
+                </p>
+                {absForm.destinationObjectId === OTHER_PLACE && (
+                  <Input
+                    className="mt-2"
+                    value={absForm.destination}
+                    onChange={(e) => setAbsForm({ ...absForm, destination: e.target.value })}
+                    placeholder="Например: Красноярск, база снабжения"
+                    data-testid="input-absence-destination"
+                  />
+                )}
               </div>
             )}
             <div>
@@ -1272,6 +1582,12 @@ export default function Crew() {
                 if (!absForm.employeeId) return setAbsError("Выберите сотрудника.");
                 if (!absForm.startDate || !absForm.endDate) return setAbsError("Укажите даты начала и окончания.");
                 if (absForm.endDate < absForm.startDate) return setAbsError("Дата окончания раньше даты начала.");
+                if (absForm.kind === "trip") {
+                  if (absForm.destinationObjectId === NO_OBJECT)
+                    return setAbsError("Выберите участок командировки из справочника.");
+                  if (absForm.destinationObjectId === OTHER_PLACE && !absForm.destination.trim())
+                    return setAbsError("Укажите, куда направлен сотрудник.");
+                }
                 saveAbsence.mutate();
               }}
               disabled={saveAbsence.isPending}

@@ -177,8 +177,8 @@ CREATE TABLE IF NOT EXISTS calendar_stages (
 CREATE TABLE IF NOT EXISTS employee_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
   kind TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
-  destination TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT '');
+  destination TEXT NOT NULL DEFAULT '', destination_object_id INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS dashboard_notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL,
   remind_date TEXT NOT NULL DEFAULT '', done INTEGER NOT NULL DEFAULT 0,
@@ -222,6 +222,15 @@ try {
     sqlite.exec("ALTER TABLE employees ADD COLUMN manual_status TEXT NOT NULL DEFAULT ''");
   if (!cols.some((c) => c.name === "medical_exam_end_date")) sqlite.exec("ALTER TABLE employees ADD COLUMN medical_exam_end_date TEXT NOT NULL DEFAULT ''");
   if (!cols.some((c) => c.name === "work_status")) sqlite.exec("ALTER TABLE employees ADD COLUMN work_status TEXT NOT NULL DEFAULT 'office'");
+} catch {
+  /* таблица только что создана */
+}
+
+// Миграция: участок командировки из справочника появился позже — раньше был только текст
+try {
+  const cols = sqlite.prepare("PRAGMA table_info(employee_events)").all() as any[];
+  if (!cols.some((c) => c.name === "destination_object_id"))
+    sqlite.exec("ALTER TABLE employee_events ADD COLUMN destination_object_id INTEGER NOT NULL DEFAULT 0");
 } catch {
   /* таблица только что создана */
 }
