@@ -124,7 +124,8 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL DEFAULT '', last_login TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login ON users(login);
 CREATE TABLE IF NOT EXISTS sessions (
-  token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT '');
+  token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id INTEGER NOT NULL DEFAULT 0,
   login TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '', action TEXT NOT NULL,
@@ -183,6 +184,18 @@ CREATE TABLE IF NOT EXISTS dashboard_notes (
   remind_date TEXT NOT NULL DEFAULT '', done INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT '');
 `);
+
+// Миграция: срок действия входа появился позже — раньше сессии были бессрочными
+try {
+  const cols = sqlite.prepare("PRAGMA table_info(sessions)").all() as any[];
+  if (!cols.some((c) => c.name === "expires_at")) {
+    sqlite.exec("ALTER TABLE sessions ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''");
+    // старые бессрочные входы закрываем — потребуется один раз войти заново
+    sqlite.exec("DELETE FROM sessions");
+  }
+} catch {
+  /* таблица только что создана — колонка уже есть */
+}
 
 // Миграция: статус станка появился позже
 try {
@@ -273,11 +286,19 @@ export const storage = {
     db.update(users).set(v).where(eq(users.id, id)).returning().get() as User,
   deleteUser: (id: number) => db.delete(users).where(eq(users.id, id)).run(),
 
-  createSession: (token: string, userId: number) =>
-    db.insert(sessions).values({ token, userId, createdAt: new Date().toISOString() }).returning().get(),
+  createSession: (token: string, userId: number, expiresAt: string) =>
+    db.insert(sessions).values({ token, userId, createdAt: new Date().toISOString(), expiresAt })
+      .returning().get(),
   sessionByToken: (token: string) => db.select().from(sessions).where(eq(sessions.token, token)).get(),
   deleteSession: (token: string) => db.delete(sessions).where(eq(sessions.token, token)).run(),
   deleteSessionsOfUser: (userId: number) => db.delete(sessions).where(eq(sessions.userId, userId)).run(),
+  /** Продление входа, пока человек продолжает работать */
+  touchSession: (token: string, expiresAt: string) =>
+    db.update(sessions).set({ expiresAt }).where(eq(sessions.token, token)).run(),
+  /** Уборка просроченных входов при запуске программы */
+  deleteExpiredSessions: () =>
+    sqlite.prepare("DELETE FROM sessions WHERE expires_at = '' OR expires_at < ?")
+      .run(new Date().toISOString()).changes,
 
   audit: (limit = 400) =>
     db.select().from(auditLog).orderBy(desc(auditLog.id)).limit(limit).all() as AuditRow[],

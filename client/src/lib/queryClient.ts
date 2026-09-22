@@ -2,9 +2,27 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
-/** Токен входа хранится в памяти: localStorage и cookie в песочнице недоступны */
-let authToken = "";
-export function setAuthToken(token: string) { authToken = token; }
+/**
+ * Токен входа хранится в localStorage браузера, поэтому вход не теряется
+ * при обновлении страницы (F5) и при возврате в программу позже.
+ * В памяти держим копию — чтение из localStorage на каждый запрос не нужно.
+ */
+const TOKEN_KEY = "grr-control.token";
+
+function readStoredToken(): string {
+  try { return window.localStorage.getItem(TOKEN_KEY) ?? ""; } catch { return ""; }
+}
+
+let authToken = readStoredToken();
+
+export function setAuthToken(token: string) {
+  authToken = token;
+  try {
+    if (token) window.localStorage.setItem(TOKEN_KEY, token);
+    else window.localStorage.removeItem(TOKEN_KEY);
+  } catch { /* приватный режим браузера — вход проживёт до закрытия вкладки */ }
+}
+
 export function getAuthToken() { return authToken; }
 const authHeaders = (): Record<string, string> => (authToken ? { "x-auth-token": authToken } : {});
 

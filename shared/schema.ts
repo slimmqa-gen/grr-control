@@ -785,6 +785,8 @@ export const sessions = sqliteTable("sessions", {
   token: text("token").primaryKey(),
   userId: integer("user_id").notNull(),
   createdAt: text("created_at").notNull().default(""),
+  /** Срок действия входа. Пустая строка — старый бессрочный вход, закрывается при обновлении */
+  expiresAt: text("expires_at").notNull().default(""),
 });
 
 /** Журнал действий */

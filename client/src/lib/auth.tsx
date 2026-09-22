@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
-import { apiRequest, setAuthToken, queryClient } from "@/lib/queryClient";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { apiRequest, setAuthToken, getAuthToken, queryClient } from "@/lib/queryClient";
 
 export type Perm = {
   label: string; hint: string; sections: string[];
@@ -14,6 +14,8 @@ export type SessionUser = {
 
 type Ctx = {
   user: SessionUser | null;
+  /** Идёт проверка сохранённого входа — экран входа пока не показываем */
+  checking: boolean;
   login: (login: string, password: string) => Promise<void>;
   logout: () => void;
   can: (section: string) => boolean;
@@ -24,12 +26,32 @@ type Ctx = {
 };
 
 const AuthContext = createContext<Ctx>({
-  user: null, login: async () => {}, logout: () => {},
+  user: null, checking: false, login: async () => {}, logout: () => {},
   can: () => false, refresh: async () => {}, finance: false, write: false,
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
+  // Если в браузере сохранён токен — проверяем его на сервере, не спрашивая пароль заново
+  const [checking, setChecking] = useState<boolean>(() => !!getAuthToken());
+
+  useEffect(() => {
+    if (!getAuthToken()) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiRequest("GET", "/api/auth/me");
+        const data = (await res.json()) as SessionUser;
+        if (!cancelled) setUser(data);
+      } catch {
+        // срок входа истёк или учётную запись отключили — просим войти заново
+        setAuthToken("");
+      } finally {
+        if (!cancelled) setChecking(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const login = async (loginName: string, password: string) => {
     const res = await apiRequest("POST", "/api/auth/login", { login: loginName, password });
@@ -59,7 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, login, logout, can, refresh, finance: !!user?.perm?.finance, write: !!user?.perm?.write }}
+      value={{ user, checking, login, logout, can, refresh, finance: !!user?.perm?.finance, write: !!user?.perm?.write }}
     >
       {children}
     </AuthContext.Provider>

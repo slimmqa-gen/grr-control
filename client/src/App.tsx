@@ -86,8 +86,15 @@ function AppRouter() {
 }
 
 function Authenticated() {
-  const { user } = useAuth();
+  const { user, checking } = useAuth();
   useLocation();
+  if (checking) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-6" data-testid="auth-checking">
+        <p className="text-sm text-muted-foreground">Загрузка программы…</p>
+      </div>
+    );
+  }
   if (!user) return <LoginPage />;
   return (
     <Shell>
