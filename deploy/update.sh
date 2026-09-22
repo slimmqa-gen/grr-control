@@ -64,11 +64,19 @@ DATA_DIR="${DATA_DIR:-/var/pbk-data}"
 say "Папка данных: ${DATA_DIR}"
 [ -d "$DATA_DIR" ] || warn "папка данных ${DATA_DIR} не найдена — база будет создана заново при старте"
 
-# Незакоммиченные правки на сервере: git pull их затрёт или остановится с конфликтом
-if [ -n "$(git status --porcelain)" ]; then
+# Правки в файлах проекта останавливают обновление: git pull их затрёт или
+# упрётся в конфликт. Посторонние файлы, которых нет в репозитории (копии вида
+# routes.ts.backup), обновлению не мешают — о них только предупреждаем.
+UNTRACKED="$(git ls-files --others --exclude-standard)"
+if [ -n "$UNTRACKED" ]; then
   say ""
-  say "Локальные изменения в папке проекта:"
-  git status --short
+  warn "в папке проекта есть посторонние файлы (обновлению не мешают):"
+  printf '  %s\n' $UNTRACKED
+fi
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  say ""
+  say "Изменённые файлы проекта:"
+  git status --short --untracked-files=no
   say ""
   say "Сохранить их:  git stash"
   say "Отказаться:    git checkout -- ."
