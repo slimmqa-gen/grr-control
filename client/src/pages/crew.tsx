@@ -20,6 +20,46 @@ import { nf, ruDate, todayIso, downloadFile, levelBadge, levelText, type Level }
 import { cn } from "@/lib/utils";
 
 const NO_OBJECT = "0";
+
+/** Подписи видов отсутствий: используются в дашборде и списках */
+const ABSENCE_KIND_TEXT: Record<string, string> = {
+  vacation: "Отпуск", sick: "Больничный", trip: "Командировка", study: "Обучение", between: "На межвахте",
+};
+
+/**
+ * Строка дашборда: нажатие открывает карточку сотрудника, значок графика —
+ * его годовую аналитику. Так из любого показателя можно провалиться к человеку.
+ */
+function DashRow({
+  fio, sub, badge, level, onOpen, onAnalytics, testId,
+}: {
+  fio: string; sub: string; badge: string; level: Level;
+  onOpen: () => void; onAnalytics: () => void; testId: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border p-2" data-testid={testId}>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="min-w-0 flex-1 text-left transition hover:text-primary"
+        title="Открыть карточку сотрудника"
+      >
+        <div className="truncate text-sm font-medium">{fio}</div>
+        <div className="truncate text-xs text-muted-foreground">{sub}</div>
+      </button>
+      <Badge variant="outline" className={cn("shrink-0 border text-[11px]", levelBadge[level])}>{badge}</Badge>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={`Аналитика: ${fio}`}
+        title="Аналитика по сотруднику"
+        onClick={onAnalytics}
+      >
+        <BarChart3 className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
 const OTHER_PLACE = "other";
 
 /** Состояния кадровой аналитики: один день относится только к одному состоянию */
@@ -90,13 +130,14 @@ export default function Crew() {
   const empEventsQ = useList<any>("/api/employee-events");
   const { toast } = useToast();
 
-  const [tab, setTab] = useState<"people" | "shifts" | "absence">("people");
+  const [tab, setTab] = useState<"dash" | "people" | "shifts" | "absence">("dash");
 
   // фильтры справочника сотрудников
   const [q, setQ] = useState("");
   const [objectFilter, setObjectFilter] = useState("all");
   const [positionFilter, setPositionFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [medFilter, setMedFilter] = useState<"all" | "problem" | "soon">("all");
   // фильтр вкладки «Вахты»
   const [shiftObjectFilter, setShiftObjectFilter] = useState("all");
   const [shiftPeriod, setShiftPeriod] = useState<"current" | "planned" | "done" | "all">("current");
@@ -269,8 +310,12 @@ export default function Crew() {
         (!needle || String(e.fio).toLowerCase().includes(needle)) &&
         (objectFilter === "all" || (objectFilter === NO_OBJECT ? !e.objectId : e.objectId === Number(objectFilter))) &&
         (positionFilter === "all" || e.position === positionFilter) &&
-        (statusFilter === "all" || e.status === statusFilter));
-  }, [emps, allShifts, empAllEvents, q, objectFilter, positionFilter, statusFilter, today]);
+        (statusFilter === "all" || e.status === statusFilter) &&
+        (medFilter === "all" || (() => {
+          const m = medExamInfo(e.medicalExamEndDate ?? "", today);
+          return medFilter === "problem" ? m.level === "bad" : m.level !== "ok";
+        })()));
+  }, [emps, allShifts, empAllEvents, q, objectFilter, positionFilter, statusFilter, medFilter, today]);
 
   const counters = useMemo(() => {
     const all = emps.map((e) => statusOf(e.id, e.manualStatus));
@@ -472,6 +517,19 @@ export default function Crew() {
     .sort((a, b) => (a.period === b.period ? a.endDate.localeCompare(b.endDate) : a.startDate < b.startDate ? 1 : -1));
 
   const rotation = shiftRows;
+
+  /** Наборы для дашборда: срочное сверху, каждая строка ведёт в карточку */
+  const dashSoonOut = shiftRows
+    .filter((r) => r.period === "current" && r.daysLeft <= th.rotationEndDays)
+    .sort((a, b) => a.daysLeft - b.daysLeft);
+  const dashMed = rows
+    .map((e: any) => ({ ...e, med: medExamInfo(e.medicalExamEndDate ?? "", today) }))
+    .filter((e: any) => e.med.level !== "ok")
+    .sort((a: any, b: any) => (a.med.level === b.med.level ? 0 : a.med.level === "bad" ? -1 : 1));
+  const dashAbsent = absenceAll
+    .filter((ev: any) => ev.state === "active")
+    .sort((a: any, b: any) => a.daysLeft - b.daysLeft);
+  const dashIncomplete = rows.filter((e: any) => !e.position || !e.objectId || !e.phone);
   // календарь показывает текущие и запланированные вахты независимо от фильтра периода
   const calendarRows = shiftRows.filter((r) => r.period !== "done");
   const soon = data.rotation.filter((r: any) => r.daysLeft <= th.rotationEndDays);
@@ -482,6 +540,17 @@ export default function Crew() {
     const start = Math.max(0, Math.round((new Date(r.startDate).getTime() - nowDate.getTime()) / 86400000));
     const end = Math.min(span, Math.round((new Date(r.endDate).getTime() - nowDate.getTime()) / 86400000) + 1);
     return { left: (start / span) * 100, width: Math.max(2, ((end - start) / span) * 100) };
+  };
+
+  /** Открыть карточку сотрудника по идентификатору — из любой строки дашборда */
+  const openEmployeeCard = (id: number) => {
+    const e = emps.find((x: any) => x.id === id);
+    if (e) openEdit(e);
+  };
+  /** Открыть годовую аналитику сотрудника */
+  const openAnalytics = (id: number) => {
+    setTsYear(String(new Date().getFullYear()));
+    setTsDialog({ open: true, id });
   };
 
   const openAdd = () => {
@@ -513,6 +582,9 @@ export default function Crew() {
   const showPeople = (status: string) => {
     setTab("people");
     setQ("");
+    setObjectFilter("all");
+    setPositionFilter("all");
+    setMedFilter("all");
     setStatusFilter(status);
     scrollToList("table-employees");
   };
@@ -572,6 +644,15 @@ export default function Crew() {
       <div className="mb-4 inline-flex rounded-md border p-1" role="tablist">
         <Button
           size="sm"
+          variant={tab === "dash" ? "default" : "ghost"}
+          onClick={() => setTab("dash")}
+          data-testid="tab-dash"
+        >
+          <BarChart3 className="mr-2 h-4 w-4" />
+          Дашборд
+        </Button>
+        <Button
+          size="sm"
           variant={tab === "people" ? "default" : "ghost"}
           onClick={() => setTab("people")}
           data-testid="tab-people"
@@ -604,6 +685,196 @@ export default function Crew() {
         </Button>
       </div>
 
+      {tab === "dash" && (
+        <>
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+            <Kpi
+              testId="dash-kpi-total" label="Всего сотрудников" value={nf(counters.total)}
+              onClick={() => showPeople("all")}
+            />
+            <Kpi
+              testId="dash-kpi-onshift" label="На вахте" value={nf(counters.onshift)}
+              level={counters.onshift > 0 ? "ok" : "warn"}
+              onClick={() => showPeople("onshift")}
+            />
+            <Kpi
+              testId="dash-kpi-between" label="На межвахте" value={nf(counters.between)}
+              onClick={() => showPeople("between")}
+            />
+            <Kpi
+              testId="dash-kpi-absent" label="Отсутствуют сейчас" value={nf(dashAbsent.length)}
+              level={dashAbsent.length === 0 ? "ok" : "warn"}
+              onClick={() => showAbsence("all", "active")}
+            />
+            <Kpi
+              testId="dash-kpi-med" label="Медосмотр под вопросом" value={nf(dashMed.length)}
+              level={dashMed.length === 0 ? "ok" : "bad"}
+              onClick={() => { setTab("people"); setQ(""); setObjectFilter("all"); setPositionFilter("all"); setStatusFilter("all"); setMedFilter("soon"); scrollToList("table-employees"); }}
+            />
+            <Kpi
+              testId="dash-kpi-soon" label="Скоро выезд с вахты" value={nf(dashSoonOut.length)}
+              level={dashSoonOut.length === 0 ? "ok" : "warn"}
+              hint={`Порог ${nf(th.rotationEndDays)} дн.`}
+              onClick={() => showShifts("current", "soon")}
+            />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Section
+              title="Скоро выезд с вахты"
+              description="Нажмите строку — откроется карточка сотрудника"
+              actions={dashSoonOut.length > 12 ? (
+                <Button variant="outline" size="sm" onClick={() => showShifts("current", "soon")} data-testid="dash-all-soon">
+                  Показать все ({nf(dashSoonOut.length)})
+                </Button>
+              ) : undefined}
+            >
+              {dashSoonOut.length === 0 ? (
+                <Empty text="В ближайшие дни выездов нет." />
+              ) : (
+                <div className="space-y-1" data-testid="dash-list-soon">
+                  {dashSoonOut.slice(0, 12).map((r: any) => (
+                    <DashRow
+                      key={r.shiftId}
+                      testId={`dash-row-soon-${r.shiftId}`}
+                      fio={r.fio}
+                      sub={`${r.position} · ${r.object}`}
+                      badge={r.daysLeft <= 0 ? "выезд сегодня" : `осталось ${nf(r.daysLeft)} дн.`}
+                      level={r.daysLeft <= 1 ? "bad" : "warn"}
+                      onOpen={() => openEmployeeCard(r.employeeId)}
+                      onAnalytics={() => openAnalytics(r.employeeId)}
+                    />
+                  ))}
+                </div>
+              )}
+            </Section>
+
+            <Section
+              title="Медосмотр: просрочен или скоро истекает"
+              description="Порог — 30 дней до окончания"
+              actions={dashMed.length > 12 ? (
+                <Button
+                  variant="outline" size="sm" data-testid="dash-all-med"
+                  onClick={() => { setTab("people"); setQ(""); setObjectFilter("all"); setPositionFilter("all"); setStatusFilter("all"); setMedFilter("soon"); scrollToList("table-employees"); }}
+                >
+                  Показать всех ({nf(dashMed.length)})
+                </Button>
+              ) : undefined}
+            >
+              {dashMed.length === 0 ? (
+                <Empty text="У всех сотрудников медосмотр в порядке." />
+              ) : (
+                <div className="space-y-1" data-testid="dash-list-med">
+                  {dashMed.slice(0, 12).map((e: any) => (
+                    <DashRow
+                      key={e.id}
+                      testId={`dash-row-med-${e.id}`}
+                      fio={e.fio}
+                      sub={`${e.position || "должность не указана"} · ${objName(e.objectId) || "объект не указан"}`}
+                      badge={e.med.text}
+                      level={e.med.level}
+                      onOpen={() => openEmployeeCard(e.id)}
+                      onAnalytics={() => openAnalytics(e.id)}
+                    />
+                  ))}
+                </div>
+              )}
+            </Section>
+
+            <Section
+              title="Отсутствуют сейчас"
+              description="Отпуск, больничный, командировка, обучение"
+              actions={dashAbsent.length > 12 ? (
+                <Button variant="outline" size="sm" onClick={() => showAbsence("all", "active")} data-testid="dash-all-absent">
+                  Показать всех ({nf(dashAbsent.length)})
+                </Button>
+              ) : undefined}
+            >
+              {dashAbsent.length === 0 ? (
+                <Empty text="Все на месте." />
+              ) : (
+                <div className="space-y-1" data-testid="dash-list-absent">
+                  {dashAbsent.slice(0, 12).map((ev: any) => (
+                    <DashRow
+                      key={ev.id}
+                      testId={`dash-row-absent-${ev.id}`}
+                      fio={ev.fio}
+                      sub={`${ABSENCE_KIND_TEXT[ev.kind] ?? ev.kind} · по ${ruDate(ev.endDate)}`}
+                      badge={ev.daysLeft <= 0 ? "заканчивается сегодня" : `осталось ${nf(ev.daysLeft)} дн.`}
+                      level={ev.daysLeft <= 2 ? "warn" : "ok"}
+                      onOpen={() => openEmployeeCard(ev.employeeId)}
+                      onAnalytics={() => openAnalytics(ev.employeeId)}
+                    />
+                  ))}
+                </div>
+              )}
+            </Section>
+
+            <Section
+              title="Не хватает данных в карточках"
+              description="Нет должности, объекта или телефона"
+              actions={dashIncomplete.length > 12 ? (
+                <Button variant="outline" size="sm" onClick={() => showPeople("all")} data-testid="dash-all-incomplete">
+                  Показать всех ({nf(dashIncomplete.length)})
+                </Button>
+              ) : undefined}
+            >
+              {dashIncomplete.length === 0 ? (
+                <Empty text="Карточки сотрудников заполнены." />
+              ) : (
+                <div className="space-y-1" data-testid="dash-list-incomplete">
+                  {dashIncomplete.slice(0, 12).map((e: any) => (
+                    <DashRow
+                      key={e.id}
+                      testId={`dash-row-incomplete-${e.id}`}
+                      fio={e.fio}
+                      sub={[!e.position && "нет должности", !e.objectId && "нет объекта", !e.phone && "нет телефона"]
+                        .filter(Boolean).join(" · ")}
+                      badge="заполнить"
+                      level="warn"
+                      onOpen={() => openEmployeeCard(e.id)}
+                      onAnalytics={() => openAnalytics(e.id)}
+                    />
+                  ))}
+                </div>
+              )}
+            </Section>
+          </div>
+
+          <Section
+            className="mt-4"
+            title="Люди по участкам"
+            description="Нажмите участок — откроется список его сотрудников"
+          >
+            {objectStaffing.length === 0 ? (
+              <Empty text="Участки не заполнены. Добавьте их в справочнике объектов." />
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {objectStaffing.map((o: any) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => { setTab("people"); setQ(""); setPositionFilter("all"); setStatusFilter("all"); setMedFilter("all"); setObjectFilter(String(o.id)); scrollToList("table-employees"); }}
+                    className="flex items-center justify-between rounded-md border p-3 text-left transition hover:border-primary/60 hover:bg-accent/40"
+                    data-testid={`dash-object-${o.id}`}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{o.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {o.plan > 0 ? `Факт ${nf(o.fact)} из ${nf(o.plan)} по штату` : `Людей: ${nf(o.fact)}`}
+                      </div>
+                    </div>
+                    <Badge variant="outline" className={cn("border text-[11px]", levelBadge[o.complete ? "ok" : "warn"])}>
+                      {o.complete ? "укомплектован" : `не хватает ${nf(Math.max(0, o.plan - o.fact))}`}
+                    </Badge>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Section>
+        </>
+      )}
+
       {tab === "people" && (
         <>
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -632,7 +903,7 @@ export default function Crew() {
           </div>
 
           <Card className="mb-4 p-3">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">Поиск по ФИО</label>
                 <div className="relative">
@@ -680,6 +951,17 @@ export default function Crew() {
                     <SelectItem value="sick">Больничный</SelectItem>
                     <SelectItem value="trip">Командировка</SelectItem>
                     <SelectItem value="study">Обучение</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Медосмотр</label>
+                <Select value={medFilter} onValueChange={(v) => setMedFilter(v as any)}>
+                  <SelectTrigger data-testid="filter-crew-med"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Любой</SelectItem>
+                    <SelectItem value="problem">Просрочен или не указан</SelectItem>
+                    <SelectItem value="soon">Требует внимания (30 дн.)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
