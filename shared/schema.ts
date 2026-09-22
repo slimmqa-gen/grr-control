@@ -198,7 +198,12 @@ export const EMPLOYEE_EVENT_LABELS: Record<string, string> = {
   between: "На межвахте",
 };
 
-export const insertEmployeeEventSchema = createInsertSchema(employeeEvents).omit({ id: true }).extend({
+/**
+ * Поля кадрового события без проверок. Отдельная база нужна потому, что zod
+ * не разрешает `.partial()` для схемы с `.refine()`, а правка записи приходит
+ * частями — иначе PATCH падает с ошибкой вместо сохранения дат.
+ */
+const employeeEventFields = createInsertSchema(employeeEvents).omit({ id: true }).extend({
   employeeId: z.coerce.number().min(1, "Выберите сотрудника"),
   kind: z.string().refine((k) => (EMPLOYEE_EVENT_KINDS as readonly string[]).includes(k), "Неизвестный тип события"),
   startDate: z.string().min(1, "Укажите дату начала"),
@@ -206,11 +211,21 @@ export const insertEmployeeEventSchema = createInsertSchema(employeeEvents).omit
   destination: z.string().default(""),
   destinationObjectId: z.coerce.number().default(0),
   note: z.string().default(""),
-}).refine((v) => v.endDate >= v.startDate, {
-  message: "Дата окончания не может быть раньше даты начала", path: ["endDate"],
-}).refine((v) => v.kind !== "trip" || Number(v.destinationObjectId) > 0 || v.destination.trim().length > 0, {
-  message: "Для командировки выберите участок из справочника", path: ["destinationObjectId"],
 });
+
+const datesInOrder = (v: { startDate?: string; endDate?: string }) =>
+  !v.startDate || !v.endDate || v.endDate >= v.startDate;
+const tripHasPlace = (v: { kind?: string; destinationObjectId?: number; destination?: string }) =>
+  v.kind !== "trip" || Number(v.destinationObjectId ?? 0) > 0 || (v.destination ?? "").trim().length > 0;
+
+export const insertEmployeeEventSchema = employeeEventFields
+  .refine(datesInOrder, { message: "Дата окончания не может быть раньше даты начала", path: ["endDate"] })
+  .refine(tripHasPlace, { message: "Для командировки выберите участок из справочника", path: ["destinationObjectId"] });
+
+/** Схема для правки записи: приходят только изменённые поля */
+export const patchEmployeeEventSchema = employeeEventFields.partial()
+  .refine(datesInOrder, { message: "Дата окончания не может быть раньше даты начала", path: ["endDate"] })
+  .refine(tripHasPlace, { message: "Для командировки выберите участок из справочника", path: ["destinationObjectId"] });
 
 /** Заметки и напоминания на дашборде: произвольная запись с необязательной датой напоминания */
 export const dashboardNotes = sqliteTable("dashboard_notes", {
@@ -659,7 +674,11 @@ export const insertAnalysisTypeSchema = createInsertSchema(analysisTypes).omit({
   elements: z.string().default(""),
   unit: z.string().default("г/т"),
 });
-export const insertSampleSchema = createInsertSchema(samples).omit({ id: true }).extend({
+/** Проверка глубин, пригодная и для правки по частям */
+const depthsValid = (strict: boolean) => (v: { fromDepth?: number; toDepth?: number }) =>
+  v.fromDepth === undefined || v.toDepth === undefined || (strict ? v.toDepth > v.fromDepth : v.toDepth >= v.fromDepth);
+const DEPTH_MESSAGE = { message: "Глубина «до» должна быть больше глубины «от»", path: ["toDepth"] };
+const sampleFields = createInsertSchema(samples).omit({ id: true }).extend({
   code: z.string().default(""),
   date: z.string().min(1, "Укажите дату отбора"),
   objectId: z.coerce.number().default(0),
@@ -677,9 +696,9 @@ export const insertSampleSchema = createInsertSchema(samples).omit({ id: true })
   batchId: z.coerce.number().default(0),
   note: z.string().default(""),
   importId: z.coerce.number().default(0),
-}).refine((v) => v.toDepth >= v.fromDepth, {
-  message: "Глубина «до» должна быть больше глубины «от»", path: ["toDepth"],
 });
+export const insertSampleSchema = sampleFields.refine(depthsValid(false), DEPTH_MESSAGE);
+export const patchSampleSchema = sampleFields.partial().refine(depthsValid(false), DEPTH_MESSAGE);
 export const insertLabBatchSchema = createInsertSchema(labBatches).omit({ id: true }).extend({
   code: z.string().default(""),
   labId: z.coerce.number().min(1, "Выберите лабораторию"),
@@ -701,7 +720,7 @@ export const insertAssaySchema = createInsertSchema(assays).omit({ id: true }).e
   importId: z.coerce.number().default(0),
 });
 
-export const insertCoreLogSchema = createInsertSchema(coreLogs).omit({ id: true }).extend({
+const coreLogFields = createInsertSchema(coreLogs).omit({ id: true }).extend({
   date: z.string().min(1, "Укажите дату"),
   objectId: z.coerce.number().default(0),
   holeName: z.string().min(1, "Укажите скважину"),
@@ -715,10 +734,11 @@ export const insertCoreLogSchema = createInsertSchema(coreLogs).omit({ id: true 
   photo: z.coerce.number().default(0),
   status: z.string().default("описано"),
   importId: z.coerce.number().default(0),
-}).refine((v) => v.toDepth > v.fromDepth, {
-  message: "Глубина «до» должна быть больше глубины «от»", path: ["toDepth"],
 });
-export const insertCoreCutSchema = createInsertSchema(coreCuts).omit({ id: true }).extend({
+export const insertCoreLogSchema = coreLogFields.refine(depthsValid(true), DEPTH_MESSAGE);
+export const patchCoreLogSchema = coreLogFields.partial().refine(depthsValid(true), DEPTH_MESSAGE);
+
+const coreCutFields = createInsertSchema(coreCuts).omit({ id: true }).extend({
   date: z.string().min(1, "Укажите дату"),
   objectId: z.coerce.number().default(0),
   holeName: z.string().min(1, "Укажите скважину"),
@@ -732,9 +752,9 @@ export const insertCoreCutSchema = createInsertSchema(coreCuts).omit({ id: true 
   rejectReason: z.string().default(""),
   status: z.string().default("распилено"),
   importId: z.coerce.number().default(0),
-}).refine((v) => v.toDepth > v.fromDepth, {
-  message: "Глубина «до» должна быть больше глубины «от»", path: ["toDepth"],
 });
+export const insertCoreCutSchema = coreCutFields.refine(depthsValid(true), DEPTH_MESSAGE);
+export const patchCoreCutSchema = coreCutFields.partial().refine(depthsValid(true), DEPTH_MESSAGE);
 
 export const insertShiftSchema = createInsertSchema(shifts).omit({ id: true }).extend({
   employeeId: z.coerce.number(),

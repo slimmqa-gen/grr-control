@@ -139,14 +139,22 @@ export default function Crew() {
   const empFio = (id: number) => emps.find((e: any) => e.id === id)?.fio ?? "—";
 
   const today = todayIso();
+  const empAllEvents: any[] = empEventsQ.data ?? [];
+
+  /**
+   * Статус на сегодня. Ручной статус действует только пока его подтверждает
+   * запись об отсутствии, иначе завершённый больничный навсегда перекрывает вахту.
+   */
   const statusOf = (empId: number, manualStatus?: string): Status => {
-    if (manualStatus && (MANUAL_STATUSES as string[]).includes(manualStatus)) return manualStatus as Status;
+    const ownEvents = empAllEvents.filter((ev: any) => ev.employeeId === empId);
+    const covering = ownEvents.find((ev: any) => ev.startDate <= today && ev.endDate >= today);
+    if (covering && (MANUAL_STATUSES as string[]).includes(covering.kind)) return covering.kind as Status;
+    if (!ownEvents.length && manualStatus && (MANUAL_STATUSES as string[]).includes(manualStatus))
+      return manualStatus as Status;
     const own = allShifts.filter((s) => s.employeeId === empId);
     if (!own.length) return "none";
     return own.some((s) => s.startDate <= today && s.endDate >= today) ? "onshift" : "between";
   };
-
-  const empAllEvents: any[] = empEventsQ.data ?? [];
 
   const absenceRows = useMemo(() => {
     return empAllEvents
@@ -240,12 +248,12 @@ export default function Crew() {
     const needle = q.trim().toLowerCase();
     return emps
       .map((e) => ({ ...e, status: statusOf(e.id, e.manualStatus) as Status }))
-      .filter((e) =>
+      .filter((e: any) =>
         (!needle || String(e.fio).toLowerCase().includes(needle)) &&
         (objectFilter === "all" || (objectFilter === NO_OBJECT ? !e.objectId : e.objectId === Number(objectFilter))) &&
         (positionFilter === "all" || e.position === positionFilter) &&
         (statusFilter === "all" || e.status === statusFilter));
-  }, [emps, allShifts, q, objectFilter, positionFilter, statusFilter, today]);
+  }, [emps, allShifts, empAllEvents, q, objectFilter, positionFilter, statusFilter, today]);
 
   const counters = useMemo(() => {
     const all = emps.map((e) => statusOf(e.id, e.manualStatus));
@@ -255,7 +263,7 @@ export default function Crew() {
       between: all.filter((s) => s === "between").length,
       none: all.filter((s) => s === "none").length,
     };
-  }, [emps, allShifts, today]);
+  }, [emps, allShifts, empAllEvents, today]);
 
   const objectStaffing = useMemo(
     () =>
@@ -438,10 +446,20 @@ export default function Crew() {
     });
     setEmpDialog({ open: true, id: e.id });
   };
-  const openAssign = (ids: number[]) => {
+  /** Назначение или продление вахты. При продлении дата заезда — день после прежнего выезда */
+  const openAssign = (ids: number[], startDate?: string) => {
     setShiftError("");
-    setShiftForm({ startDate: todayIso(), cycle: "30/30", ownCycle: "", objectId: "keep" });
+    setShiftForm({ startDate: startDate ?? todayIso(), cycle: "30/30", ownCycle: "", objectId: "keep" });
     setShiftDialog({ open: true, ids });
+  };
+
+  /** Последний выезд сотрудника — от него считается продление */
+  const nextShiftStart = (empId: number) => {
+    const ends = allShifts.filter((s) => s.employeeId === empId).map((s) => s.endDate).sort();
+    const last = ends[ends.length - 1];
+    if (!last) return todayIso();
+    const next = addDaysIso(last, 1);
+    return next > todayIso() ? next : todayIso();
   };
 
   const shiftEnd = (() => {
@@ -699,17 +717,15 @@ export default function Crew() {
                         </td>
                         <td className="py-2">
                           <div className="flex justify-end gap-1">
-                            {e.status === "none" && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => openAssign([e.id])}
-                                data-testid={`button-assign-shift-${e.id}`}
-                              >
-                                <CalendarPlus className="mr-1 h-3.5 w-3.5" />
-                                Назначить вахту
-                              </Button>
-                            )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openAssign([e.id], e.status === "none" ? todayIso() : nextShiftStart(e.id))}
+                              data-testid={`button-assign-shift-${e.id}`}
+                            >
+                              <CalendarPlus className="mr-1 h-3.5 w-3.5" />
+                              {e.status === "none" ? "Назначить вахту" : "Продлить вахту"}
+                            </Button>
                             <Button
                               variant="ghost"
                               size="icon"
@@ -938,6 +954,15 @@ export default function Crew() {
                           </td>
                           <td className="py-2 text-right">
                             <div className="flex justify-end gap-1">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => openAssign([r.employeeId], addDaysIso(r.endDate, 1))}
+                                data-testid={`button-extend-shift-${r.shiftId}`}
+                              >
+                                <CalendarPlus className="mr-1 h-3.5 w-3.5" />
+                                Продлить
+                              </Button>
                               <Button
                                 variant="ghost"
                                 size="icon"
@@ -1227,6 +1252,7 @@ export default function Crew() {
             <DialogTitle>Назначить вахту</DialogTitle>
             <DialogDescription>
               Сотрудников выбрано: {nf(shiftDialog.ids.length)}. Дата выезда считается автоматически по циклу.
+              Открытые отпуск, больничный или межвахта закроются днём до заезда.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 sm:grid-cols-2">

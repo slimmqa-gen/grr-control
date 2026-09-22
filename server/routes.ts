@@ -18,6 +18,7 @@ import {
   DATA_TYPES, IMPORT_FIELDS, DEFAULT_THRESHOLDS, RIG_STATUSES, EQUIPMENT_KINDS,
   insertLabSchema, insertAnalysisTypeSchema, insertSampleSchema, insertLabBatchSchema,
   insertAssaySchema, insertCoreLogSchema, insertCoreCutSchema,
+  patchEmployeeEventSchema, patchSampleSchema, patchCoreLogSchema, patchCoreCutSchema,
   SAMPLE_STAGES, SAMPLE_TYPES, REJECT_REASONS, SHIP_METHODS, SAMPLE_ELEMENTS, ASSAY_UNITS,
   CUT_TYPES, CORE_LOG_STATUSES, CUT_STATUSES, CUT_REJECT_REASONS,
 } from "@shared/schema";
@@ -558,7 +559,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/inventory/:id", (req, res) => { storage.deleteInventory(Number(req.params.id)); res.json({ ok: true }); });
 
   // ---------- Люди и вахты ----------
-  app.get("/api/employees", (_req, res) => res.json(storage.employees()));
+  app.get("/api/employees", (_req, res) => {
+    // Ручной статус действует, пока его подтверждает запись об отсутствии на сегодня.
+    // Без этого завершённый больничный или отпуск навсегда перекрывал вахту.
+    const today = new Date().toISOString().slice(0, 10);
+    const events = storage.employeeEvents();
+    const list = storage.employees().map((e: any) => {
+      if (!e.manualStatus) return e;
+      const own = events.filter((ev) => ev.employeeId === e.id);
+      if (!own.length) return e; // старые записи без событий оставляем как есть
+      const covering = own.find((ev) => ev.startDate <= today && ev.endDate >= today);
+      const actual = covering ? covering.kind : "";
+      if (actual === e.manualStatus) return e;
+      storage.updateEmployee(e.id, { manualStatus: actual });
+      return { ...e, manualStatus: actual };
+    });
+    res.json(list);
+  });
   app.post("/api/employees", (req, res) => {
     try { res.json(storage.createEmployee({ ...insertEmployeeSchema.parse(req.body), importId: 0 })); }
     catch (e) { fail(res, e); }
@@ -624,6 +641,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       end.setUTCDate(end.getUTCDate() + days - 1);
       const endDate = end.toISOString().slice(0, 10);
       const emps = storage.employees();
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const dayBefore = (iso: string) => {
+        const d = new Date(iso + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() - 1);
+        return d.toISOString().slice(0, 10);
+      };
       let created = 0;
       for (const id of ids) {
         const e = emps.find((x) => x.id === id);
@@ -634,6 +657,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           employeeId: id, objectId: target, startDate, endDate, cycleType,
           replacementAssigned: 0, importId: 0,
         });
+
+        // Человек уезжает на вахту, поэтому открытые отпуск, больничный, обучение
+        // или межвахта закрываются днём до заезда: иначе ручной статус
+        // продолжает перекрывать вахту и назначить её заново не получается.
+        for (const ev of storage.employeeEvents()) {
+          if (ev.employeeId !== id) continue;
+          if (ev.endDate < startDate) continue;      // уже закончилось до заезда
+          if (ev.startDate > startDate) continue;    // запланировано после заезда — не трогаем
+          const newEnd = dayBefore(startDate);
+          if (newEnd < ev.startDate) storage.deleteEmployeeEvent(ev.id);
+          else storage.updateEmployeeEvent(ev.id, { endDate: newEnd });
+        }
+        const stillAbsent = storage.employeeEvents().find(
+          (ev) => ev.employeeId === id && ev.startDate <= todayIso && ev.endDate >= todayIso,
+        );
+        storage.updateEmployee(id, { manualStatus: stillAbsent ? stillAbsent.kind : "" });
+
         created++;
       }
       audit(req, "Назначение вахты", "employees", `Сотрудников: ${created}, заезд ${startDate}, цикл ${cycleType}`);
@@ -693,7 +733,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/employee-events/:id", (req, res) => {
     try {
       const before = storage.employeeEvents().find((ev) => ev.id === Number(req.params.id));
-      const updated = storage.updateEmployeeEvent(Number(req.params.id), insertEmployeeEventSchema.partial().parse(req.body));
+      const updated = storage.updateEmployeeEvent(Number(req.params.id), patchEmployeeEventSchema.parse(req.body));
       if (before) syncEmployeeStatusFromEvents(before.employeeId);
       res.json(updated);
     } catch (e) { fail(res, e); }
@@ -845,7 +885,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e) { fail(res, e); }
   });
   app.patch("/api/samples/:id", (req, res) => {
-    try { res.json(storage.updateSample(Number(req.params.id), insertSampleSchema.partial().parse(req.body))); }
+    try { res.json(storage.updateSample(Number(req.params.id), patchSampleSchema.parse(req.body))); }
     catch (e) { fail(res, e); }
   });
   app.delete("/api/samples/:id", (req, res) => {
@@ -949,7 +989,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/corelogs/:id", (req, res) => {
     try {
       const id = Number(req.params.id);
-      const v = insertCoreLogSchema.partial().parse(req.body);
+      const v = patchCoreLogSchema.parse(req.body);
       const cur = storage.coreLogs().find((x) => x.id === id);
       if (cur)
         overlapCheck(storage.coreLogs(), v.holeName ?? cur.holeName,
@@ -971,7 +1011,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/corecuts/:id", (req, res) => {
     try {
       const id = Number(req.params.id);
-      const v = insertCoreCutSchema.partial().parse(req.body);
+      const v = patchCoreCutSchema.parse(req.body);
       const cur = storage.coreCuts().find((x) => x.id === id);
       if (cur)
         overlapCheck(storage.coreCuts(), v.holeName ?? cur.holeName,
