@@ -626,20 +626,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/employees/:id", (req, res) => { storage.deleteEmployee(Number(req.params.id)); res.json({ ok: true }); });
 
   /** Массовое назначение вахты выбранным сотрудникам */
+  /** Цикл считается по фактическим датам: 30 дней на вахте → «30/30» */
+  const shiftCycle = (startDate: string, endDate: string) => {
+    const days = Math.round(
+      (new Date(endDate + "T00:00:00Z").getTime() - new Date(startDate + "T00:00:00Z").getTime()) / 86400000,
+    ) + 1;
+    return `${days}/${days}`;
+  };
+
   app.post("/api/employees/bulk-shift", (req, res) => {
     try {
       const ids: number[] = Array.isArray(req.body?.ids) ? req.body.ids.map(Number) : [];
       const startDate = String(req.body?.startDate ?? "").slice(0, 10);
-      const cycleType = String(req.body?.cycleType ?? "").trim();
       const objectId = Number(req.body?.objectId ?? 0) || 0;
+      const isoRe = /^\d{4}-\d{2}-\d{2}$/;
       if (!ids.length) throw new Error("Выберите хотя бы одного сотрудника");
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) throw new Error("Укажите дату заезда");
-      if (!cycleType) throw new Error("Укажите цикл вахты");
-      const days = Number(String(cycleType).split("/")[0]);
-      if (!days || days < 1) throw new Error("Цикл вахты указывается в виде 30/30");
-      const end = new Date(startDate + "T00:00:00Z");
-      end.setUTCDate(end.getUTCDate() + days - 1);
-      const endDate = end.toISOString().slice(0, 10);
+      if (!isoRe.test(startDate)) throw new Error("Укажите дату заезда");
+
+      // Даты задаёт пользователь: выезд приходит явно, а цикл считается по числу дней.
+      // Старый вариант с циклом вместо даты выезда оставлен для совместимости.
+      let endDate = String(req.body?.endDate ?? "").slice(0, 10);
+      if (!endDate) {
+        const days = Number(String(req.body?.cycleType ?? "").split("/")[0]);
+        if (!days || days < 1) throw new Error("Укажите дату выезда");
+        const end = new Date(startDate + "T00:00:00Z");
+        end.setUTCDate(end.getUTCDate() + days - 1);
+        endDate = end.toISOString().slice(0, 10);
+      }
+      if (!isoRe.test(endDate)) throw new Error("Укажите дату выезда");
+      if (endDate < startDate) throw new Error("Дата выезда не может быть раньше даты заезда");
+      const cycleType = shiftCycle(startDate, endDate);
       const emps = storage.employees();
       const todayIso = new Date().toISOString().slice(0, 10);
       const dayBefore = (iso: string) => {
@@ -793,7 +809,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const end = patch.endDate ?? current.endDate;
       if (end < start) throw new Error("Дата выезда не может быть раньше даты заезда");
       if (req.body?.objectId !== undefined) patch.objectId = Number(req.body.objectId) || 0;
-      if (req.body?.cycleType !== undefined) patch.cycleType = String(req.body.cycleType).trim();
+      // цикл всегда пересчитывается по датам, чтобы дни в отчётах совпадали с фактом
+      if (patch.startDate || patch.endDate) patch.cycleType = shiftCycle(start, end);
       if (req.body?.replacementAssigned !== undefined) patch.replacementAssigned = Number(req.body.replacementAssigned) ? 1 : 0;
       if (!Object.keys(patch).length) throw new Error("Нечего менять");
       const updated = storage.updateShift(Number(req.params.id), patch);

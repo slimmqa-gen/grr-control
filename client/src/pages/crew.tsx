@@ -19,7 +19,6 @@ import { PageHeader, Section, Empty, Loading, ErrorBox, ExportButton, Kpi } from
 import { nf, ruDate, todayIso, downloadFile, levelBadge, levelText, type Level } from "@/lib/app";
 import { cn } from "@/lib/utils";
 
-const CYCLES = ["30/30", "60/30", "15/15", "45/45", "60/60"];
 const NO_OBJECT = "0";
 const OTHER_PLACE = "other";
 
@@ -45,7 +44,6 @@ function medExamInfo(date: string, today: string): { text: string; level: Level 
   return { text: new Date(date).toLocaleDateString("ru-RU"), level: "ok" };
 }
 const OWN_POSITION = "__own__";
-const OWN_CYCLE = "__own__";
 
 function addDaysIso(iso: string, days: number) {
   const d = new Date(iso);
@@ -92,6 +90,7 @@ export default function Crew() {
   const [statusFilter, setStatusFilter] = useState("all");
   // фильтр вкладки «Вахты»
   const [shiftObjectFilter, setShiftObjectFilter] = useState("all");
+  const [shiftPeriod, setShiftPeriod] = useState<"current" | "planned" | "done" | "all">("current");
 
   const [selected, setSelected] = useState<number[]>([]);
 
@@ -101,7 +100,7 @@ export default function Crew() {
   const [empError, setEmpError] = useState("");
 
   const [shiftDialog, setShiftDialog] = useState<{ open: boolean; ids: number[] }>({ open: false, ids: [] });
-  const [shiftForm, setShiftForm] = useState({ startDate: todayIso(), cycle: "30/30", ownCycle: "", objectId: "keep" });
+  const [shiftForm, setShiftForm] = useState({ startDate: todayIso(), endDate: "", objectId: "keep" });
   const [shiftError, setShiftError] = useState("");
 
   const [bulkDialog, setBulkDialog] = useState<null | "object" | "position">(null);
@@ -319,11 +318,10 @@ export default function Crew() {
 
   const assignShift = useMutation({
     mutationFn: async () => {
-      const cycleType = shiftForm.cycle === OWN_CYCLE ? shiftForm.ownCycle.replace(/\s/g, "") : shiftForm.cycle;
       return (await apiRequest("POST", "/api/employees/bulk-shift", {
         ids: shiftDialog.ids,
         startDate: shiftForm.startDate,
-        cycleType,
+        endDate: shiftForm.endDate,
         objectId: shiftForm.objectId === "keep" ? 0 : Number(shiftForm.objectId),
       })).json();
     },
@@ -417,9 +415,37 @@ export default function Crew() {
   if (error || !data) return <ErrorBox text="Не удалось загрузить данные по сотрудникам. Обновите страницу." />;
 
   const th = data.thresholds;
-  const rotation = data.rotation.filter(
-    (r: any) => shiftObjectFilter === "all" || r.objectId === Number(shiftObjectFilter),
-  );
+  /**
+   * Все вахты, а не только текущие: даты заезда и выезда должны быть доступны
+   * для правки в любой момент — и до заезда, и после возвращения.
+   */
+  const shiftRows = allShifts
+    .map((s: any) => {
+      const e = emps.find((x: any) => x.id === s.employeeId);
+      const days = (from: string, to: string) =>
+        Math.round((new Date(to + "T00:00:00").getTime() - new Date(from + "T00:00:00").getTime()) / 86400000);
+      const cycleDays = Number(String(s.cycleType).split("/")[0]) || 0;
+      const period = s.startDate > today ? "planned" : s.endDate < today ? "done" : "current";
+      return {
+        shiftId: s.id, employeeId: s.employeeId,
+        fio: e?.fio ?? "—", position: e?.position ?? "—",
+        object: objName(s.objectId) || "не указан", objectId: s.objectId,
+        startDate: s.startDate, endDate: s.endDate, cycleType: s.cycleType,
+        daysWorked: period === "planned" ? 0 : days(s.startDate, period === "done" ? s.endDate : today) + 1,
+        daysLeft: days(today, s.endDate),
+        overtime: period !== "planned" && cycleDays > 0 && days(s.startDate, s.endDate) + 1 > cycleDays,
+        replacementAssigned: s.replacementAssigned === 1,
+        period,
+      };
+    })
+    .filter((r) =>
+      (shiftObjectFilter === "all" || r.objectId === Number(shiftObjectFilter)) &&
+      (shiftPeriod === "all" || r.period === shiftPeriod))
+    .sort((a, b) => (a.period === b.period ? a.endDate.localeCompare(b.endDate) : a.startDate < b.startDate ? 1 : -1));
+
+  const rotation = shiftRows;
+  // календарь показывает текущие и запланированные вахты независимо от фильтра периода
+  const calendarRows = shiftRows.filter((r) => r.period !== "done");
   const soon = data.rotation.filter((r: any) => r.daysLeft <= th.rotationEndDays);
 
   const nowDate = new Date(data.nowIso);
@@ -446,27 +472,19 @@ export default function Crew() {
     });
     setEmpDialog({ open: true, id: e.id });
   };
-  /** Назначение или продление вахты. При продлении дата заезда — день после прежнего выезда */
-  const openAssign = (ids: number[], startDate?: string) => {
+  /** Даты заезда и выезда задаёт пользователь, цикл считается по ним */
+  const openAssign = (ids: number[]) => {
     setShiftError("");
-    setShiftForm({ startDate: startDate ?? todayIso(), cycle: "30/30", ownCycle: "", objectId: "keep" });
+    setShiftForm({ startDate: todayIso(), endDate: "", objectId: "keep" });
     setShiftDialog({ open: true, ids });
   };
 
-  /** Последний выезд сотрудника — от него считается продление */
-  const nextShiftStart = (empId: number) => {
-    const ends = allShifts.filter((s) => s.employeeId === empId).map((s) => s.endDate).sort();
-    const last = ends[ends.length - 1];
-    if (!last) return todayIso();
-    const next = addDaysIso(last, 1);
-    return next > todayIso() ? next : todayIso();
-  };
-
-  const shiftEnd = (() => {
-    const c = shiftForm.cycle === OWN_CYCLE ? shiftForm.ownCycle.replace(/\s/g, "") : shiftForm.cycle;
-    const days = Number(String(c).split("/")[0]);
-    return days > 0 ? addDaysIso(shiftForm.startDate, days - 1) : "";
-  })();
+  /** Число дней и цикл по выбранным датам: 30 дней на вахте → «30/30» */
+  const shiftDays = (from: string, to: string) =>
+    from && to && to >= from
+      ? Math.round((new Date(to + "T00:00:00").getTime() - new Date(from + "T00:00:00").getTime()) / 86400000) + 1
+      : 0;
+  const assignDays = shiftDays(shiftForm.startDate, shiftForm.endDate);
 
   const allChecked = rows.length > 0 && rows.every((r) => selected.includes(r.id));
   const toggleAll = () =>
@@ -720,11 +738,11 @@ export default function Crew() {
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => openAssign([e.id], e.status === "none" ? todayIso() : nextShiftStart(e.id))}
+                              onClick={() => openAssign([e.id])}
                               data-testid={`button-assign-shift-${e.id}`}
                             >
                               <CalendarPlus className="mr-1 h-3.5 w-3.5" />
-                              {e.status === "none" ? "Назначить вахту" : "Продлить вахту"}
+                              Назначить вахту
                             </Button>
                             <Button
                               variant="ghost"
@@ -885,19 +903,31 @@ export default function Crew() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="min-w-[200px]">
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Период</label>
+              <Select value={shiftPeriod} onValueChange={(v) => setShiftPeriod(v as any)}>
+                <SelectTrigger data-testid="filter-shift-period"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="current">Сейчас на вахте</SelectItem>
+                  <SelectItem value="planned">Запланированные</SelectItem>
+                  <SelectItem value="done">Завершённые</SelectItem>
+                  <SelectItem value="all">Все вахты</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <Button size="sm" onClick={() => { setTab("people"); }} data-testid="button-go-people">
               <CalendarPlus className="mr-2 h-4 w-4" />
               Назначить вахту
             </Button>
           </Card>
 
-          <Section className="mb-4" title="Кто сейчас на объекте" description="Сортировка по дате выезда">
+          <Section className="mb-4" title="Вахты" description="Даты заезда и выезда можно изменить в любой момент — кнопка с карандашом">
             {allShifts.length === 0 ? (
               <div className="rounded-md border border-dashed p-6 text-center" data-testid="empty-shifts">
                 <div className="text-sm font-medium">Вахты ещё не назначены</div>
                 <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
                   Перейдите на вкладку «Сотрудники», выберите людей галочками и нажмите «Назначить вахту».
-                  Дата выезда посчитается автоматически по циклу.
+                  Даты заезда и выезда указываете вы, цикл программа посчитает сама.
                 </p>
                 <Button className="mt-3" size="sm" onClick={() => setTab("people")} data-testid="button-empty-go-people">
                   <Users className="mr-2 h-4 w-4" />
@@ -905,7 +935,7 @@ export default function Crew() {
                 </Button>
               </div>
             ) : rotation.length === 0 ? (
-              <Empty text="На выбранном объекте сейчас нет людей на вахте." />
+              <Empty text="По выбранному объекту и периоду вахт нет. Измените фильтры." />
             ) : (
               <div className="sticky-head max-h-[55vh] overflow-auto">
                 <table className="w-full min-w-[760px] text-sm" data-testid="table-rotation">
@@ -933,12 +963,14 @@ export default function Crew() {
                           <td className="num py-2 pr-3">{r.cycleType}</td>
                           <td className="num py-2 pr-3 whitespace-nowrap">{ruDate(r.startDate)}</td>
                           <td className="num py-2 pr-3 whitespace-nowrap">{ruDate(r.endDate)}</td>
-                          <td className={cn("num py-2 pr-3 text-right font-medium", levelText[lvl])}>
-                            {nf(r.daysLeft)}
-                            {r.overtime && <span className="ml-1 text-xs">переработка</span>}
+                          <td className={cn("num py-2 pr-3 text-right font-medium", r.period === "current" ? levelText[lvl] : "")}>
+                            {r.period === "current" ? nf(r.daysLeft) : r.period === "planned" ? "до заезда" : "завершена"}
+                            {r.overtime && r.period === "current" && <span className="ml-1 text-xs">переработка</span>}
                           </td>
                           <td className="py-2">
-                            {r.replacementAssigned ? (
+                            {r.period !== "current" ? (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            ) : r.replacementAssigned ? (
                               <Badge variant="outline" className={cn("border text-[11px]", levelBadge.ok)}>назначена</Badge>
                             ) : (
                               <Button
@@ -954,15 +986,6 @@ export default function Crew() {
                           </td>
                           <td className="py-2 text-right">
                             <div className="flex justify-end gap-1">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => openAssign([r.employeeId], addDaysIso(r.endDate, 1))}
-                                data-testid={`button-extend-shift-${r.shiftId}`}
-                              >
-                                <CalendarPlus className="mr-1 h-3.5 w-3.5" />
-                                Продлить
-                              </Button>
                               <Button
                                 variant="ghost"
                                 size="icon"
@@ -994,11 +1017,11 @@ export default function Crew() {
           </Section>
 
           <Section title="Календарь вахт" description="Ближайшие 60 дней, полоса — период работы на объекте">
-            {rotation.length === 0 ? (
+            {calendarRows.length === 0 ? (
               <Empty text="Нет активных вахт для отображения." />
             ) : (
               <div className="space-y-1.5" data-testid="calendar-shifts">
-                {rotation.slice(0, 24).map((r: any) => {
+                {calendarRows.slice(0, 24).map((r: any) => {
                   const b = bar(r);
                   return (
                     <div key={r.shiftId} className="flex items-center gap-2">
@@ -1251,7 +1274,7 @@ export default function Crew() {
           <DialogHeader>
             <DialogTitle>Назначить вахту</DialogTitle>
             <DialogDescription>
-              Сотрудников выбрано: {nf(shiftDialog.ids.length)}. Дата выезда считается автоматически по циклу.
+              Сотрудников выбрано: {nf(shiftDialog.ids.length)}. Укажите даты заезда и выезда — цикл посчитается сам.
               Открытые отпуск, больничный или межвахта закроются днём до заезда.
             </DialogDescription>
           </DialogHeader>
@@ -1266,23 +1289,14 @@ export default function Crew() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium">Цикл вахты *</label>
-              <Select value={shiftForm.cycle} onValueChange={(v) => setShiftForm({ ...shiftForm, cycle: v })}>
-                <SelectTrigger data-testid="select-cycle"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {CYCLES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                  <SelectItem value={OWN_CYCLE}>Свой цикл…</SelectItem>
-                </SelectContent>
-              </Select>
-              {shiftForm.cycle === OWN_CYCLE && (
-                <Input
-                  className="mt-2"
-                  value={shiftForm.ownCycle}
-                  onChange={(e) => setShiftForm({ ...shiftForm, ownCycle: e.target.value })}
-                  placeholder="например 21/21"
-                  data-testid="input-own-cycle"
-                />
-              )}
+              <label className="mb-1 block text-xs font-medium">Дата выезда *</label>
+              <Input
+                type="date"
+                value={shiftForm.endDate}
+                min={shiftForm.startDate}
+                onChange={(e) => setShiftForm({ ...shiftForm, endDate: e.target.value })}
+                data-testid="input-end"
+              />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium">Объект вахты</label>
@@ -1295,8 +1309,12 @@ export default function Crew() {
               </Select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium">Дата выезда (расчёт)</label>
-              <Input value={shiftEnd ? ruDate(shiftEnd) : "—"} readOnly data-testid="text-end-date" />
+              <label className="mb-1 block text-xs font-medium">Цикл (расчёт)</label>
+              <Input
+                value={assignDays ? `${assignDays}/${assignDays} — дней на вахте: ${nf(assignDays)}` : "—"}
+                readOnly
+                data-testid="text-cycle"
+              />
             </div>
           </div>
           {shiftError && <div className="mt-2"><ErrorBox text={shiftError} /></div>}
@@ -1307,7 +1325,8 @@ export default function Crew() {
             <Button
               onClick={() => {
                 setShiftError("");
-                if (!shiftEnd) return setShiftError("Цикл указывается в виде 30/30.");
+                if (!shiftForm.startDate || !shiftForm.endDate) return setShiftError("Укажите даты заезда и выезда.");
+                if (shiftForm.endDate < shiftForm.startDate) return setShiftError("Дата выезда раньше даты заезда.");
                 assignShift.mutate();
               }}
               disabled={assignShift.isPending}
