@@ -91,6 +91,8 @@ export default function Crew() {
   // фильтр вкладки «Вахты»
   const [shiftObjectFilter, setShiftObjectFilter] = useState("all");
   const [shiftPeriod, setShiftPeriod] = useState<"current" | "planned" | "done" | "all">("current");
+  const [shiftFocus, setShiftFocus] = useState<"all" | "soon" | "noReplacement">("all");
+  const [absStateFilter, setAbsStateFilter] = useState<"all" | "active" | "endingSoon" | "upcoming" | "past">("all");
 
   const [selected, setSelected] = useState<number[]>([]);
 
@@ -155,7 +157,7 @@ export default function Crew() {
     return own.some((s) => s.startDate <= today && s.endDate >= today) ? "onshift" : "between";
   };
 
-  const absenceRows = useMemo(() => {
+  const absenceAll = useMemo(() => {
     return empAllEvents
       .map((ev: any) => {
         const daysLeft = Math.round(
@@ -168,16 +170,23 @@ export default function Crew() {
           ev.startDate <= today && ev.endDate >= today ? "active" : ev.startDate > today ? "upcoming" : "past";
         return { ...ev, fio: empFio(ev.employeeId), daysLeft, daysToStart, state };
       })
-      .filter((ev: any) => absKindFilter === "all" || ev.kind === absKindFilter)
       .sort((a: any, b: any) => {
         const order: any = { active: 0, upcoming: 1, past: 2 };
         if (order[a.state] !== order[b.state]) return order[a.state] - order[b.state];
         return a.startDate < b.startDate ? 1 : -1;
       });
-  }, [empAllEvents, emps, today, absKindFilter]);
+  }, [empAllEvents, emps, today]);
 
+  const absenceRows = useMemo(() =>
+    absenceAll.filter((ev: any) =>
+      (absKindFilter === "all" || ev.kind === absKindFilter) &&
+      (absStateFilter === "all" ||
+        (absStateFilter === "endingSoon" ? ev.state === "active" && ev.daysLeft <= 2 : ev.state === absStateFilter))),
+  [absenceAll, absKindFilter, absStateFilter]);
+
+  // счётчики считаются по всем записям, поэтому не зависят от выбранных фильтров
   const absCounters = useMemo(() => {
-    const active = absenceRows.filter((e: any) => e.state === "active");
+    const active = absenceAll.filter((e: any) => e.state === "active");
     return {
       vacation: active.filter((e: any) => e.kind === "vacation").length,
       sick: active.filter((e: any) => e.kind === "sick").length,
@@ -185,7 +194,7 @@ export default function Crew() {
       study: active.filter((e: any) => e.kind === "study").length,
       endingSoon: active.filter((e: any) => e.daysLeft <= 2).length,
     };
-  }, [absenceRows]);
+  }, [absenceAll]);
 
   const saveAbsence = useMutation({
     mutationFn: async () => {
@@ -440,7 +449,10 @@ export default function Crew() {
     })
     .filter((r) =>
       (shiftObjectFilter === "all" || r.objectId === Number(shiftObjectFilter)) &&
-      (shiftPeriod === "all" || r.period === shiftPeriod))
+      (shiftPeriod === "all" || r.period === shiftPeriod) &&
+      (shiftFocus === "all" ||
+        (r.period === "current" && r.daysLeft <= th.rotationEndDays &&
+          (shiftFocus === "soon" || !r.replacementAssigned))))
     .sort((a, b) => (a.period === b.period ? a.endDate.localeCompare(b.endDate) : a.startDate < b.startDate ? 1 : -1));
 
   const rotation = shiftRows;
@@ -472,6 +484,35 @@ export default function Crew() {
     });
     setEmpDialog({ open: true, id: e.id });
   };
+  /**
+   * Переход от показателя к списку: карточка задаёт вкладку и фильтры,
+   * страница прокручивается к таблице, чтобы сразу было видно, кто и как.
+   */
+  const scrollToList = (testId: string) => {
+    window.setTimeout(
+      () => document.querySelector(`[data-testid='${testId}']`)?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      80,
+    );
+  };
+  const showPeople = (status: string) => {
+    setTab("people");
+    setQ("");
+    setStatusFilter(status);
+    scrollToList("table-employees");
+  };
+  const showShifts = (period: "current" | "planned" | "done" | "all", focus: "all" | "soon" | "noReplacement") => {
+    setTab("shifts");
+    setShiftPeriod(period);
+    setShiftFocus(focus);
+    scrollToList("table-rotation");
+  };
+  const showAbsence = (kind: string, state: "active" | "endingSoon" = "active") => {
+    setTab("absence");
+    setAbsKindFilter(kind);
+    setAbsStateFilter(state);
+    scrollToList("table-absence");
+  };
+
   /** Даты заезда и выезда задаёт пользователь, цикл считается по ним */
   const openAssign = (ids: number[]) => {
     setShiftError("");
@@ -550,15 +591,27 @@ export default function Crew() {
       {tab === "people" && (
         <>
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Kpi testId="kpi-total" label="Всего сотрудников" value={nf(counters.total)} hint="В справочнике" />
-            <Kpi testId="kpi-onshift" label="На вахте" value={nf(counters.onshift)} level={counters.onshift > 0 ? "ok" : "warn"} />
-            <Kpi testId="kpi-between" label="На межвахте" value={nf(counters.between)} />
+            <Kpi
+              testId="kpi-total" label="Всего сотрудников" value={nf(counters.total)}
+              hint="Весь справочник"
+              onClick={() => showPeople("all")} active={statusFilter === "all"}
+            />
+            <Kpi
+              testId="kpi-onshift" label="На вахте" value={nf(counters.onshift)}
+              level={counters.onshift > 0 ? "ok" : "warn"}
+              onClick={() => showPeople("onshift")} active={statusFilter === "onshift"}
+            />
+            <Kpi
+              testId="kpi-between" label="На межвахте" value={nf(counters.between)}
+              onClick={() => showPeople("between")} active={statusFilter === "between"}
+            />
             <Kpi
               testId="kpi-noshift"
               label="Вахта не назначена"
               value={nf(counters.none)}
               level={counters.none === 0 ? "ok" : "warn"}
               hint="Отметьте людей и назначьте вахту"
+              onClick={() => showPeople("none")} active={statusFilter === "none"}
             />
           </div>
 
@@ -868,6 +921,8 @@ export default function Crew() {
               label="Людей на вахте"
               value={`${nf(data.kpi.peopleOnSite)} / ${nf(data.kpi.staffRequired)}`}
               hint="Факт / штат"
+              onClick={() => showShifts("current", "all")}
+              active={shiftPeriod === "current" && shiftFocus === "all"}
               level={
                 data.kpi.peopleOnSite >= data.kpi.staffRequired
                   ? "ok"
@@ -882,14 +937,22 @@ export default function Crew() {
               value={nf(soon.length)}
               hint={`Порог ${nf(th.rotationEndDays)} дн.`}
               level={soon.length === 0 ? "ok" : "warn"}
+              onClick={() => showShifts("current", "soon")}
+              active={shiftFocus === "soon"}
             />
             <Kpi
               testId="kpi-no-replacement"
               label="Без назначенной замены"
               value={nf(soon.filter((r: any) => !r.replacementAssigned).length)}
               level={soon.filter((r: any) => !r.replacementAssigned).length === 0 ? "ok" : "bad"}
+              onClick={() => showShifts("current", "noReplacement")}
+              active={shiftFocus === "noReplacement"}
             />
-            <Kpi testId="kpi-noshift-total" label="Вахта не назначена" value={nf(counters.none)} hint="Из справочника сотрудников" />
+            <Kpi
+              testId="kpi-noshift-total" label="Вахта не назначена" value={nf(counters.none)}
+              hint="Откроется список сотрудников"
+              onClick={() => showPeople("none")}
+            />
           </div>
 
           <Card className="mb-4 flex flex-wrap items-end gap-3 p-3">
@@ -912,6 +975,17 @@ export default function Crew() {
                   <SelectItem value="planned">Запланированные</SelectItem>
                   <SelectItem value="done">Завершённые</SelectItem>
                   <SelectItem value="all">Все вахты</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="min-w-[200px]">
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Показывать</label>
+              <Select value={shiftFocus} onValueChange={(v) => setShiftFocus(v as any)}>
+                <SelectTrigger data-testid="filter-shift-focus"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Все вахты периода</SelectItem>
+                  <SelectItem value="soon">Выезд в ближайшие дни</SelectItem>
+                  <SelectItem value="noReplacement">Без назначенной замены</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1052,15 +1126,33 @@ export default function Crew() {
         <>
           <div className="mb-4 flex items-center justify-between gap-3">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-              <Kpi testId="kpi-abs-vacation" label="В отпуске" value={nf(absCounters.vacation)} />
-              <Kpi testId="kpi-abs-sick" label="На больничном" value={nf(absCounters.sick)} />
-              <Kpi testId="kpi-abs-trip" label="В командировке" value={nf(absCounters.trip)} />
-              <Kpi testId="kpi-abs-study" label="На обучении" value={nf(absCounters.study)} />
+              <Kpi
+                testId="kpi-abs-vacation" label="В отпуске" value={nf(absCounters.vacation)}
+                onClick={() => showAbsence("vacation")}
+                active={absKindFilter === "vacation" && absStateFilter === "active"}
+              />
+              <Kpi
+                testId="kpi-abs-sick" label="На больничном" value={nf(absCounters.sick)}
+                onClick={() => showAbsence("sick")}
+                active={absKindFilter === "sick" && absStateFilter === "active"}
+              />
+              <Kpi
+                testId="kpi-abs-trip" label="В командировке" value={nf(absCounters.trip)}
+                onClick={() => showAbsence("trip")}
+                active={absKindFilter === "trip" && absStateFilter === "active"}
+              />
+              <Kpi
+                testId="kpi-abs-study" label="На обучении" value={nf(absCounters.study)}
+                onClick={() => showAbsence("study")}
+                active={absKindFilter === "study" && absStateFilter === "active"}
+              />
               <Kpi
                 testId="kpi-abs-ending"
                 label="Заканчивается в течение 2 дн."
                 value={nf(absCounters.endingSoon)}
                 level={absCounters.endingSoon > 0 ? "warn" : "ok"}
+                onClick={() => showAbsence("all", "endingSoon")}
+                active={absStateFilter === "endingSoon"}
               />
             </div>
             <Button size="sm" onClick={openAddAbsence} data-testid="button-add-absence">
@@ -1070,7 +1162,8 @@ export default function Crew() {
           </div>
 
           <Card className="mb-4 p-3">
-            <div className="max-w-xs">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Тип события</label>
               <Select value={absKindFilter} onValueChange={setAbsKindFilter}>
                 <SelectTrigger data-testid="filter-absence-kind"><SelectValue /></SelectTrigger>
@@ -1083,6 +1176,20 @@ export default function Crew() {
                   <SelectItem value="between">На межвахте</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Состояние</label>
+              <Select value={absStateFilter} onValueChange={(v) => setAbsStateFilter(v as any)}>
+                <SelectTrigger data-testid="filter-absence-state"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Все записи</SelectItem>
+                  <SelectItem value="active">Идут сейчас</SelectItem>
+                  <SelectItem value="endingSoon">Заканчиваются в течение 2 дн.</SelectItem>
+                  <SelectItem value="upcoming">Запланированные</SelectItem>
+                  <SelectItem value="past">Завершённые</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             </div>
           </Card>
 

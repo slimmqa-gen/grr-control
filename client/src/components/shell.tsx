@@ -312,9 +312,44 @@ export function ExportButton({
   );
 }
 
+/**
+ * Показатель. Если передан `onClick`, карточка становится кнопкой: нажатие
+ * открывает список по этому показателю, `active` подсвечивает выбранный.
+ */
 export function Kpi({
-  label, value, hint, level, testId,
-}: { label: string; value: string; hint?: string; level?: Level; testId?: string }) {
+  label, value, hint, level, testId, onClick, active,
+}: {
+  label: string; value: string; hint?: string; level?: Level; testId?: string;
+  onClick?: () => void; active?: boolean;
+}) {
+  if (onClick) {
+    return (
+      <Card
+        role="button"
+        tabIndex={0}
+        aria-label={`Показать: ${label}`}
+        onClick={onClick}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); }
+        }}
+        className={cn(
+          "cursor-pointer p-4 transition hover:border-primary/60 hover:bg-accent/40",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          active && "border-primary ring-1 ring-primary",
+        )}
+        data-testid={testId}
+      >
+        <div className="flex items-start gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:text-xs">
+          {level && <span className={cn("mt-0.5 h-2 w-2 shrink-0 rounded-full", levelDot[level])} />}
+          <span className="leading-snug">{label}</span>
+        </div>
+        <div className={cn("num mt-2 text-lg font-semibold leading-tight sm:text-2xl", level ? levelText[level] : "")}>
+          {value}
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground">{hint ?? "Нажмите, чтобы посмотреть список"}</div>
+      </Card>
+    );
+  }
   return (
     <Card className="p-4" data-testid={testId}>
       <div className="flex items-start gap-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:text-xs">
