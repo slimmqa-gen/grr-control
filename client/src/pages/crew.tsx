@@ -54,6 +54,15 @@ function addDaysIso(iso: string, days: number) {
 
 type Status = "onshift" | "between" | "none" | "vacation" | "sick" | "trip" | "study";
 const MANUAL_STATUSES: Status[] = ["vacation", "sick", "trip", "study", "between"];
+
+/** Метод работы сотрудника — выбирается кнопкой прямо в списке */
+const WORK_STATUSES = [
+  { value: "office", label: "Работа в офисе" },
+  { value: "pp", label: "Работа на ПП" },
+  { value: "between", label: "Работа вахтовым методом" },
+] as const;
+const workStatusText = (v?: string) =>
+  WORK_STATUSES.find((w) => w.value === (v || "office"))?.label ?? "Работа в офисе";
 const STATUS_TEXT: Record<Status, string> = {
   onshift: "На вахте",
   between: "На межвахте",
@@ -297,6 +306,13 @@ export default function Crew() {
     mutationFn: async ({ id, manualStatus }: { id: number; manualStatus: string }) =>
       (await apiRequest("PATCH", `/api/employees/${id}`, { manualStatus })).json(),
     onSuccess: () => queryClient.invalidateQueries(),
+  });
+
+  const updateWorkStatus = useMutation({
+    mutationFn: async ({ id, workStatus }: { id: number; workStatus: string }) =>
+      (await apiRequest("PATCH", `/api/employees/${id}`, { workStatus })).json(),
+    onSuccess: () => queryClient.invalidateQueries(),
+    onError: (e: any) => toast({ title: "Не удалось изменить метод работы", description: String(e.message) }),
   });
 
   const saveEmployee = useMutation({
@@ -750,7 +766,24 @@ export default function Crew() {
                         <td className="py-2 pr-3 text-muted-foreground">{e.position}</td>
                         <td className="py-2 pr-3 text-muted-foreground">{objName(e.objectId) || "не указан"}</td>
                         <td className="num py-2 pr-3 whitespace-nowrap text-muted-foreground">{e.phone || "—"}</td>
-                        <td className="py-2 pr-3">{e.workStatus === "pp" ? "Работа в ПП" : e.workStatus === "between" ? "Вахтовый метод" : "Работа в офисе"}</td>
+                        <td className="py-2 pr-3">
+                          <Select
+                            value={e.workStatus || "office"}
+                            onValueChange={(v) => updateWorkStatus.mutate({ id: e.id, workStatus: v })}
+                          >
+                            <SelectTrigger
+                              className="h-6 w-auto gap-1 border px-2 text-[11px] font-medium [&>svg]:h-3 [&>svg]:w-3"
+                              data-testid={`select-workstatus-${e.id}`}
+                            >
+                              <SelectValue>{workStatusText(e.workStatus)}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {WORK_STATUSES.map((w) => (
+                                <SelectItem key={w.value} value={w.value}>{w.label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </td>
                         <td className="py-2 pr-3 whitespace-nowrap">
                           {(() => {
                             const m = medExamInfo(e.medicalExamEndDate ?? "", today);
@@ -1349,7 +1382,7 @@ export default function Crew() {
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Input type="date" value={empForm.medicalExamEndDate} onChange={(e) => setEmpForm({ ...empForm, medicalExamEndDate: e.target.value })} />
-                <Select value={empForm.workStatus} onValueChange={(v) => setEmpForm({ ...empForm, workStatus: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="office">Работа в офисе</SelectItem><SelectItem value="pp">Работа в ПП</SelectItem><SelectItem value="between">Вахтовый метод</SelectItem></SelectContent></Select>
+                <Select value={empForm.workStatus} onValueChange={(v) => setEmpForm({ ...empForm, workStatus: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{WORK_STATUSES.map((w) => (<SelectItem key={w.value} value={w.value}>{w.label}</SelectItem>))}</SelectContent></Select>
               </div>
             </div>
             {empError && <ErrorBox text={empError} />}
