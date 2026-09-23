@@ -27,6 +27,12 @@ DRY_RUN=0
 
 cd "$APP_DIR"
 
+# bash читает файл сценария по ходу выполнения, а git pull может обновить сам
+# сценарий. Запоминаем его отпечаток, чтобы после обновления перезапустить
+# новую версию, а не продолжать выполнять устаревшую.
+SELF="${BASH_SOURCE[0]}"
+SELF_HASH_BEFORE="$(sha256sum "$SELF" 2>/dev/null | awk '{print $1}')"
+
 say()  { echo "$*"; }
 warn() { echo "ВНИМАНИЕ: $*"; }
 die()  { echo "ОШИБКА: $*" >&2; exit 1; }
@@ -125,6 +131,15 @@ say ""
 say "[2/6] Забираю обновления из GitHub..."
 git pull --ff-only origin "$BRANCH"
 NEW_COMMIT="$(git rev-parse --short HEAD)"
+
+# Сценарий обновил сам себя — перезапускаем новую версию с начала
+SELF_HASH_AFTER="$(sha256sum "$SELF" 2>/dev/null | awk '{print $1}')"
+if [ "$SELF_HASH_BEFORE" != "$SELF_HASH_AFTER" ] && [ "${PBK_UPDATE_RELOADED:-0}" != "1" ]; then
+  say ""
+  say "Сценарий обновления изменился — запускаю его новую версию..."
+  export PBK_UPDATE_RELOADED=1
+  exec bash "$SELF" "$@"
+fi
 say "Текущий коммит: ${NEW_COMMIT} (прежний ${LOCAL:0:7})"
 
 say ""
