@@ -10,7 +10,10 @@ set -euo pipefail
 
 SERVICE="pbk-control"
 CERT_DIR="/usr/local/share/ca-certificates"
-BUNDLE="/usr/local/share/ca-certificates/russian_trusted_bundle.crt"
+# связка из двух сертификатов лежит ОТДЕЛЬНО от системной папки:
+# update-ca-certificates принимает там только файлы с одним сертификатом
+BUNDLE_DIR="/usr/local/share/russian-trusted"
+BUNDLE="$BUNDLE_DIR/bundle.crt"
 ROOT_URL="https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt"
 SUB_URL="https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt"
 
@@ -25,12 +28,23 @@ curl -fsSL "$ROOT_URL" -o "$tmp/root.crt"
 curl -fsSL "$SUB_URL" -o "$tmp/sub.crt"
 
 echo "2. Установка в систему"
-mkdir -p "$CERT_DIR"
+mkdir -p "$CERT_DIR" "$BUNDLE_DIR"
+# убираем связку, если прошлая версия скрипта положила её в системную папку
+# и тем испортила общий файл доверенных сертификатов
+if [ -f "$CERT_DIR/russian_trusted_bundle.crt" ]; then
+  rm -f "$CERT_DIR/russian_trusted_bundle.crt"
+  echo "   убран лишний файл связки из системной папки"
+fi
 # переводы строк из Windows ломают разбор PEM, поэтому убираем их
 tr -d '\r' < "$tmp/root.crt" > "$CERT_DIR/russian_trusted_root_ca.crt"
 tr -d '\r' < "$tmp/sub.crt" > "$CERT_DIR/russian_trusted_sub_ca.crt"
 cat "$CERT_DIR/russian_trusted_root_ca.crt" "$CERT_DIR/russian_trusted_sub_ca.crt" > "$BUNDLE"
-update-ca-certificates >/dev/null
+# --fresh пересобирает хранилище с нуля, чтобы убрать следы прошлой ошибки
+update-ca-certificates --fresh >/dev/null 2>&1 || update-ca-certificates >/dev/null 2>&1 || true
+if ! openssl crl2pkcs7 -nocrl -certfile /etc/ssl/certs/ca-certificates.crt >/dev/null 2>&1; then
+  echo "   внимание: системный файл сертификатов всё ещё повреждён"
+  echo "   выполните: sudo apt-get install --reinstall ca-certificates && sudo update-ca-certificates --fresh"
+fi
 
 echo "3. Проверка связи с API MAX"
 check() {
