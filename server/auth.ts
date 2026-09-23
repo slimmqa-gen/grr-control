@@ -302,7 +302,7 @@ export function sectionOf(path: string): { section: Section; readGuard: boolean 
 
 // /api/max/webhook вызывает сам мессенджер MAX, без входа в программу:
 // подлинность проверяется секретом в заголовке X-Max-Bot-Api-Secret
-const PUBLIC = ["/api/auth/login", "/api/auth/demo-users", "/api/max/webhook"];
+const PUBLIC = ["/api/auth/login", "/api/max/webhook"];
 
 export function installAuth(app: Express) {
   seedUsers();
@@ -332,19 +332,25 @@ export function installAuth(app: Express) {
     res.json({ token, user: publicUser(au) });
   });
 
-  // Подсказка с демо-доступами показывается ТОЛЬКО пока пароли остались стандартными.
-  // Как только пароль сменили хотя бы у одной учётной записи — она исчезает из подсказки.
-  app.get("/api/auth/demo-users", (_req, res) => {
+  // Список учётных записей со стандартным паролем. Пароли НИКОГДА не отдаются,
+  // и увидеть список может только вошедший директор: раньше этот адрес был
+  // открыт всему интернету вместе с паролями.
+  app.get("/api/auth/demo-users", (req, res) => {
+    const au = currentUser(req);
+    if (!au) return res.status(401).json({ error: "Нужен вход в программу." });
+    if (au.role !== "director") {
+      return res.status(403).json({ error: "Список доступен только директору." });
+    }
     const stillDefault = DEMO_USERS.filter((d) => {
       const u = storage.userByLogin(d.login);
       if (!u) return false;
       try { return bcrypt.compareSync(d.password, u.passwordHash); } catch { return false; }
     });
     res.json({
-      demo: stillDefault.map((d) => ({ login: d.login, password: d.password, role: d.role, label: ROLES[d.role].label })),
+      weak: stillDefault.map((d) => ({ login: d.login, role: d.role, label: ROLES[d.role].label })),
       note: stillDefault.length
-        ? "Демо-доступы. Смените пароли перед рабочим запуском — после смены они здесь больше не показываются."
-        : "Пароли изменены. Войдите под своими логином и паролем.",
+        ? "У этих учётных записей пароль совпадает со стандартным. Смените пароли в разделе «Пользователи»."
+        : "Стандартных паролей не осталось.",
     });
   });
 
