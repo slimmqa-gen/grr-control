@@ -2349,7 +2349,7 @@ export default function Crew() {
                         ? "border-emerald-500 text-emerald-600" : "border-amber-500 text-amber-600")}
                       data-testid="badge-max-mode"
                     >
-                      {maxF.mode === "webhook" ? "MAX присылает сам (webhook)" : "опрос раз в минуту"}
+                      {maxF.mode === "webhook" ? "MAX присылает сам (webhook)" : "опрос с ожиданием событий"}
                     </Badge>
                     {maxF.lastEventAt && (
                       <span className="text-xs text-muted-foreground">
@@ -2361,6 +2361,8 @@ export default function Crew() {
                   <div className="mt-2 text-xs text-muted-foreground">
                     Webhook — способ, при котором MAX сам отправляет события на наш адрес: ответы приходят сразу,
                     ничего не теряется. Адрес должен работать по https на порту 443 с обычным сертификатом домена.
+                    В режиме опроса программа держит ожидающий запрос к MAX, поэтому нажатия кнопок доходят
+                    за секунды, но webhook надёжнее при перезапусках службы.
                   </div>
                   <div className="mt-2 flex flex-wrap items-end gap-2">
                     <div className="min-w-[280px] flex-1">
@@ -2406,8 +2408,31 @@ export default function Crew() {
                   <div className="mt-3 grid gap-3 sm:grid-cols-3">
                     <div className="sm:col-span-2">
                       <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                        Кому присылать сводки и оповещения — отметьте ответственных
+                        Кому присылать сводки и оповещения — отметьте ответственных, их может быть несколько
                       </label>
+                      <div className="mb-2 flex flex-wrap gap-2">
+                        <Button
+                          size="sm" variant="outline"
+                          onClick={() => setMaxForm({
+                            ...maxF,
+                            reportChatIds: (maxInvites.data?.rows ?? [])
+                              .filter((r: any) => r.linked).map((r: any) => String(r.chatId)).join(","),
+                          })}
+                          data-testid="button-report-all"
+                        >
+                          Отметить всех привязанных
+                        </Button>
+                        <Button
+                          size="sm" variant="ghost"
+                          onClick={() => setMaxForm({ ...maxF, reportChatIds: "" })}
+                          data-testid="button-report-none"
+                        >
+                          Снять отметки
+                        </Button>
+                        <Badge variant="secondary" className="self-center text-[11px]" data-testid="badge-report-count">
+                          выбрано {String(maxF.reportChatIds ?? "").split(",").filter((x: string) => x.trim()).length}
+                        </Badge>
+                      </div>
                       <div className="flex flex-wrap gap-2" data-testid="list-max-report-targets">
                         {(maxInvites.data?.rows ?? []).filter((r: any) => r.linked).length === 0 ? (
                           <span className="text-xs text-muted-foreground">

@@ -196,10 +196,23 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
       if (link && target && allowed.includes(chatId)) {
         storage.updateNotifyLink(link.id, { replyTo: target });
         const e = storage.employees().find((x: any) => x.id === target);
-        try {
-          await sendMax(chatId, `Напишите ответ для ${e?.fio ?? "сотрудника"} одним сообщением.`);
-        } catch {
-          // подсказка не критична
+        if (callbackId) {
+          try {
+            await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+              method: "POST",
+              body: JSON.stringify({
+                notification: "Напишите ответ сообщением",
+                message: { text: `Напишите ответ для ${e?.fio ?? "сотрудника"} одним сообщением.` },
+              }),
+            });
+          } catch {
+            // если ответ на нажатие не прошёл, пишем обычным сообщением
+            try {
+              await sendMax(chatId, `Напишите ответ для ${e?.fio ?? "сотрудника"} одним сообщением.`);
+            } catch {
+              // подсказка не критична
+            }
+          }
         }
       }
       return { linked, replies };
@@ -212,24 +225,19 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
         kind: action, createdAt: new Date().toISOString(),
       });
       replies++;
-      if (action === "confirm") {
-        await notifyResponsible(
-          `Заезд подтверждён: ${employeeName(employeeId, userName)}.`,
-          "confirm",
-        );
-      }
       // при отказе просим причину следующим сообщением
-      if (action === "decline") {
-        if (link) storage.updateNotifyLink(link.id, { awaitingShift: shiftId });
-        await notifyResponsible(
-          `Отказ от заезда: ${employeeName(employeeId, userName)}. Спросил причину, пришлю, как ответит.`,
-        );
+      if (action === "decline" && link) {
+        storage.updateNotifyLink(link.id, { awaitingShift: shiftId });
       }
+
+      // человек должен увидеть отклик сразу, поэтому отвечаем на нажатие
+      // первым делом, а рассылку ответственным отправляем уже после
       if (callbackId) {
         try {
           await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
             method: "POST",
             body: JSON.stringify({
+              notification: action === "confirm" ? "Заезд подтверждён" : "Ответ записан",
               message: {
                 text: action === "confirm"
                   ? "Спасибо, ответ записан: вы подтвердили заезд."
@@ -241,6 +249,12 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
           // ответ на кнопку не критичен — сам ответ уже сохранён
         }
       }
+
+      // оповещения ответственным не задерживают отклик кнопки
+      const summary = action === "confirm"
+        ? `Заезд подтверждён: ${employeeName(employeeId, userName)}.`
+        : `Отказ от заезда: ${employeeName(employeeId, userName)}. Спросил причину, пришлю, как ответит.`;
+      void notifyResponsible(summary, action === "confirm" ? "confirm" : "decline");
       return { linked, replies };
     }
   }
@@ -296,7 +310,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     } catch {
       // подтверждение приёма не критично
     }
-    await notifyResponsible(
+    void notifyResponsible(
       `Причина отказа. ${employeeName(employeeId, userName)}: ${text}`,
       "decline", "", employeeId,
     );
@@ -327,7 +341,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
       kind: "reply", createdAt: new Date().toISOString(),
     });
     replies++;
-    await notifyResponsible(
+    void notifyResponsible(
       `Новое сообщение от ${employeeName(employeeId, userName)}: ${text}`,
       "message", chatId, employeeId,
     );
@@ -335,10 +349,12 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
   return { linked, replies };
 }
 
-export async function pollMaxUpdates() {
+export async function pollMaxUpdates(waitSeconds = 0) {
   const s = maxSettings();
-  if (!s.token) return { linked: 0, seen: 0 };
-  const query = new URLSearchParams({ limit: "100", timeout: "0" });
+  if (!s.token) return { linked: 0, replies: 0, seen: 0 };
+  // timeout > 0 — запрос ждёт события на стороне MAX и возвращается сразу,
+  // как только что-то произошло: отклик почти мгновенный
+  const query = new URLSearchParams({ limit: "100", timeout: String(waitSeconds) });
   if (s.marker) query.set("marker", String(s.marker));
   const data = await maxRequest(`/updates?${query.toString()}`);
   const updates: any[] = Array.isArray(data?.updates) ? data.updates : [];
@@ -358,22 +374,35 @@ export async function pollMaxUpdates() {
 
 /** Раз в минуту проверяем, кто открыл бота, — привязки появляются сами */
 export function startMaxPolling() {
-  const tick = async () => {
-    try {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const loop = async () => {
+    // бесконечный цикл ожидания событий: пока событий нет, запрос «висит»
+    // на стороне MAX, поэтому реакция на кнопки приходит за секунды
+    for (;;) {
       const s = maxSettings();
-      if (!s.enabled || !s.token) return;
-      // при активной подписке MAX не отдаёт события через опрос
-      if (s.mode === "webhook") return;
-      const out = await pollMaxUpdates();
-      if (out.linked || out.replies) {
-        console.log(`[MAX] Привязок: ${out.linked}, ответов: ${out.replies}`);
+      if (!s.enabled || !s.token || s.mode === "webhook") {
+        await sleep(30_000);
+        continue;
       }
-    } catch (e) {
-      // сеть или токен — молча ждём следующего цикла, ошибку покажем в интерфейсе по кнопке проверки
+      const startedAt = Date.now();
+      try {
+        const out = await pollMaxUpdates(25);
+        if (out.linked || out.replies) {
+          console.log(`[MAX] Привязок: ${out.linked}, ответов: ${out.replies}`);
+        }
+        // страховка от «пустой карусели»: если ответ пришёл мгновенно и событий
+        // не было, выдерживаем паузу, чтобы не бомбить API запросами
+        const spent = Date.now() - startedAt;
+        if (out.seen === 0 && spent < 2_000) await sleep(2_000 - spent);
+      } catch {
+        // сеть или токен — подождём и попробуем снова; ошибку покажет кнопка проверки
+        await sleep(15_000);
+      }
     }
   };
-  setTimeout(tick, 45_000);
-  setInterval(tick, 60_000);
+
+  setTimeout(() => { void loop(); }, 10_000);
 }
 
 /** Ответы сотрудников: что пришло из MAX */
@@ -501,7 +530,10 @@ export async function notifyResponsible(
   const targets = String(s.reportChatIds ?? "").split(",").map((x) => x.trim())
     .filter((x) => x && x !== exceptChatId);
   let sent = 0;
-  for (const chatId of targets) {
+  for (const [i, chatId] of targets.entries()) {
+    // MAX принимает не более двух сообщений в секунду в один чат,
+    // поэтому пауза нужна только между отправками
+    if (i > 0) await new Promise((resolve) => setTimeout(resolve, 600));
     try {
       const r = replyEmployeeId
         ? await sendMaxWithReply(chatId, text, replyEmployeeId)
@@ -510,7 +542,6 @@ export async function notifyResponsible(
     } catch {
       // не дошло в MAX — ниже может уйти СМС
     }
-    await new Promise((resolve) => setTimeout(resolve, 600));
   }
   if (s.duplicateSms) {
     try {
