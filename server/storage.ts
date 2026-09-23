@@ -3,7 +3,7 @@ import {
   importLogs, settings, equipment, costItems, inventoryItems, DEFAULT_THRESHOLDS, POSITIONS,
   labs, analysisTypes, samples, sampleMoves, labBatches, assays, coreLogs, coreCuts,
   users, sessions, auditLog, importProfiles, synonyms, excelTemplates,
-  estimates, estimateLines, depthRates, calendarPlans, calendarStages, employeeEvents, dashboardNotes, workCalendar, smsLog, notifyLinks,
+  estimates, estimateLines, depthRates, calendarPlans, calendarStages, employeeEvents, dashboardNotes, workCalendar, smsLog, notifyLinks, maxInbox,
 } from "@shared/schema";
 import type {
   ObjectRow, Rig, Brigade, Report, Cost, Fuel, Inventory, Employee, Shift, Position, ImportLog, Thresholds,
@@ -179,6 +179,11 @@ CREATE TABLE IF NOT EXISTS employee_events (
   kind TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
   destination TEXT NOT NULL DEFAULT '', destination_object_id INTEGER NOT NULL DEFAULT 0,
   note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS max_inbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL DEFAULT 0,
+  shift_id INTEGER NOT NULL DEFAULT 0, chat_id TEXT NOT NULL DEFAULT '',
+  user_name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'reply', created_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS notify_links (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
   channel TEXT NOT NULL DEFAULT 'max', chat_id TEXT NOT NULL DEFAULT '',
@@ -602,6 +607,8 @@ export const storage = {
     return db.delete(employees).where(eq(employees.id, id)).run();
   },
 
+  maxInbox: () => db.select().from(maxInbox).all(),
+  createMaxInbox: (v: any) => db.insert(maxInbox).values(v).returning().get(),
   notifyLinks: () => db.select().from(notifyLinks).all(),
   createNotifyLink: (v: any) => db.insert(notifyLinks).values(v).returning().get(),
   updateNotifyLink: (id: number, v: any) =>

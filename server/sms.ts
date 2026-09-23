@@ -7,7 +7,7 @@
  */
 import { storage } from "./storage";
 import { DEFAULT_SMS_SETTINGS, type SmsSettings } from "@shared/schema";
-import { maxChatId, sendMax, maxSettings } from "./max";
+import { maxChatId, sendMax, maxSettings, confirmStateByShift } from "./max";
 
 const SMSC_SEND = "https://smsc.ru/sys/send.php";
 const SMSC_BALANCE = "https://smsc.ru/sys/balance.php";
@@ -177,7 +177,8 @@ export function pendingCallouts(daysBeforeOverride?: number): Callout[] {
         контакт: s.contact,
         выезд: ruDate(sh.endDate),
       });
-      const sent = log.find((l: any) => l.shiftId === sh.id && l.kind === "callout" && l.status === "sent");
+      const sent = log.find((l: any) =>
+        l.shiftId === sh.id && ["callout", "max-callout"].includes(String(l.kind)) && l.status === "sent");
       return {
         shiftId: sh.id, employeeId: sh.employeeId,
         fio: e?.fio ?? "сотрудник удалён", position: e?.position ?? "",
@@ -185,6 +186,8 @@ export function pendingCallouts(daysBeforeOverride?: number): Callout[] {
         object, startDate: sh.startDate, endDate: sh.endDate, daysLeft,
         text, parts: smsParts(text),
         sentAt: sent ? String(sent.createdAt) : "",
+        maxLinked: !!maxChatId(sh.employeeId),
+        answer: confirmStateByShift()[sh.id] ?? "",
       };
     })
     .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.fio.localeCompare(b.fio, "ru"));
@@ -196,7 +199,7 @@ export async function runCallouts(shiftIds?: number[], channel: Channel = "auto"
     (!shiftIds || shiftIds.includes(c.shiftId)) && !c.sentAt && (c.phoneOk || !!maxChatId(c.employeeId)));
   const results: { fio: string; phone: string; ok: boolean; response: string }[] = [];
   for (const c of list) {
-    const r = await sendOne(c.employeeId, c.phone, c.text, channel);
+    const r = await sendOne(c.employeeId, c.phone, c.text, channel, c.shiftId);
     storage.createSmsLog({
       employeeId: c.employeeId, shiftId: c.shiftId, phone: r.via === "max" ? "MAX" : c.phone, text: c.text,
       kind: r.via === "max" ? "max-callout" : "callout",
@@ -219,14 +222,14 @@ export type Channel = "auto" | "sms" | "max";
  * Один получатель: бесплатный MAX, если сотрудник привязан, иначе СМС.
  * Канал можно задать жёстко — тогда отправка идёт только выбранным способом.
  */
-async function sendOne(employeeId: number, phone: string, text: string, channel: Channel) {
+async function sendOne(employeeId: number, phone: string, text: string, channel: Channel, shiftId = 0) {
   const linked = employeeId ? maxChatId(employeeId) : "";
   const maxOn = maxSettings().enabled && !!maxSettings().token;
   const useMax = channel === "max" || (channel === "auto" && maxOn && !!linked);
 
   if (useMax) {
     if (!linked) return { ok: false, status: "error", response: "Сотрудник не привязал бота MAX", via: "max" };
-    const r = await sendMax(linked, text);
+    const r = await sendMax(linked, text, shiftId);
     return { ...r, via: "max" };
   }
   const r = await sendSms(phone, text);

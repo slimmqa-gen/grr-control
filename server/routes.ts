@@ -12,6 +12,7 @@ import {
 } from "./sms";
 import {
   publicMaxSettings, saveMaxSettings, maxSettings, maxBotInfo, inviteFor, pollMaxUpdates, unlinkMax,
+  maxInboxRows, replyInMax,
 } from "./max";
 import { buildWorkbook, buildSummaryWorkbook, type SheetKey } from "./excel";
 import {
@@ -883,6 +884,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/max/poll", async (req, res) => {
     try {
       const out = await pollMaxUpdates();
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Ответы сотрудников из MAX */
+  app.get("/api/max/inbox", (req, res) => {
+    try { res.json({ rows: maxInboxRows() }); } catch (e) { fail(res, e); }
+  });
+
+  /** Ответить сотруднику в MAX из программы */
+  app.post("/api/max/reply", async (req, res) => {
+    try {
+      const employeeId = Number(req.body?.employeeId);
+      const text = String(req.body?.text ?? "").trim();
+      if (!employeeId) throw new Error("Не выбран сотрудник");
+      if (!text) throw new Error("Пустое сообщение");
+      const out = await replyInMax(employeeId, text);
+      audit(req, "Ответ в MAX", "max", `сотрудник ${employeeId}`);
       res.json(out);
     } catch (e) { fail(res, e); }
   });

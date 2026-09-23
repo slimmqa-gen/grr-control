@@ -604,6 +604,23 @@ export default function Crew() {
     },
     onError: (e: any) => toast({ title: "Проверка не прошла", description: String(e.message), variant: "destructive" }),
   });
+  const maxInbox = useQuery<any>({
+    queryKey: ["/api/max/inbox"],
+    enabled: tab === "sms",
+    refetchInterval: tab === "sms" ? 30000 : false,
+  });
+  const [replyTo, setReplyTo] = useState<{ id: number; fio: string } | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const sendReply = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/max/reply", { employeeId: replyTo?.id, text: replyText }),
+    onSuccess: () => {
+      setReplyText(""); setReplyTo(null);
+      queryClient.invalidateQueries();
+      toast({ title: "Ответ отправлен в MAX" });
+    },
+    onError: (e: any) => toast({ title: "Ответ не ушёл", description: String(e.message), variant: "destructive" }),
+  });
+
   const unlinkMax = useMutation({
     mutationFn: (employeeId: number) => apiRequest("DELETE", `/api/max/links/${employeeId}`),
     onSuccess: () => { queryClient.invalidateQueries(); toast({ title: "Привязка снята" }); },
@@ -2366,6 +2383,18 @@ export default function Crew() {
                     </div>
                     <div className="min-w-[220px] flex-1 text-xs">{r.text}</div>
                     <Badge variant="outline" className="text-[11px]">частей {nf(r.parts)}</Badge>
+                    {r.maxLinked && (
+                      <Badge variant="outline" className="border-emerald-500 text-[11px] text-emerald-600">MAX</Badge>
+                    )}
+                    {r.answer && (
+                      <Badge
+                        variant="outline"
+                        className={cn("text-[11px]", r.answer === "confirm"
+                          ? "border-emerald-500 text-emerald-600" : "border-rose-500 text-rose-600")}
+                      >
+                        {r.answer === "confirm" ? "подтвердил" : "отказался"}
+                      </Badge>
+                    )}
                     {r.sentAt ? (
                       <Badge variant="secondary" className="text-[11px]">отправлено</Badge>
                     ) : (
@@ -2561,6 +2590,85 @@ export default function Crew() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </Section>
+
+          <Section
+            title="Ответы сотрудников из MAX"
+            description="Нажатия кнопок «Подтверждаю» и «Не смогу», а также обычные сообщения в чате с ботом. Обновляется само."
+            actions={
+              <Button
+                size="sm" variant="outline" onClick={() => pollMax.mutate()}
+                disabled={pollMax.isPending} data-testid="button-max-refresh-inbox"
+              >
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Проверить сейчас
+              </Button>
+            }
+          >
+            {maxInbox.isLoading ? <Loading rows={3} /> : (maxInbox.data?.rows ?? []).length === 0 ? (
+              <Empty text="Ответов пока нет. Они появятся, как только сотрудники начнут отвечать боту." />
+            ) : (
+              <div className="space-y-2" data-testid="list-max-inbox">
+                {(maxInbox.data?.rows ?? []).map((r: any) => (
+                  <div
+                    key={r.id} className="flex flex-wrap items-center gap-3 rounded-md border p-3"
+                    data-testid={`max-inbox-${r.id}`}
+                  >
+                    <div className="num w-24 shrink-0 text-xs text-muted-foreground">
+                      {String(r.createdAt).slice(8, 10)}.{String(r.createdAt).slice(5, 7)}
+                      {" "}{String(r.createdAt).slice(11, 16)}
+                    </div>
+                    <div className="min-w-[160px] flex-1">
+                      <div className="font-medium">{r.fio}</div>
+                      <div className="text-xs text-muted-foreground">{r.position}</div>
+                    </div>
+                    <div className="min-w-[200px] flex-[2] text-sm">{r.text}</div>
+                    <Badge
+                      variant="outline"
+                      className={cn("text-[11px]",
+                        r.kind === "confirm" && "border-emerald-500 text-emerald-600",
+                        r.kind === "decline" && "border-rose-500 text-rose-600")}
+                    >
+                      {r.kind === "confirm" ? "подтвердил" : r.kind === "decline" ? "отказался"
+                        : r.kind === "outgoing" ? "наш ответ" : "сообщение"}
+                    </Badge>
+                    {r.employeeId > 0 && r.kind !== "outgoing" && (
+                      <Button
+                        size="sm" variant="outline"
+                        onClick={() => { setReplyTo({ id: r.employeeId, fio: r.fio }); setReplyText(""); }}
+                        data-testid={`max-reply-${r.id}`}
+                      >
+                        Ответить
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {replyTo && (
+              <div className="mt-3 rounded-md border p-3" data-testid="box-max-reply">
+                <div className="mb-2 text-sm font-medium">Ответ для {replyTo.fio}</div>
+                <Textarea
+                  rows={2} value={replyText} onChange={(e) => setReplyText(e.target.value)}
+                  placeholder="Текст ответа в MAX"
+                  data-testid="input-max-reply"
+                />
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    size="sm" onClick={() => sendReply.mutate()}
+                    disabled={!replyText.trim() || sendReply.isPending}
+                    data-testid="button-max-reply-send"
+                  >
+                    <Send className="mr-2 h-4 w-4" />
+                    Отправить
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setReplyTo(null)} data-testid="button-max-reply-cancel">
+                    Отмена
+                  </Button>
+                </div>
               </div>
             )}
           </Section>

@@ -125,12 +125,27 @@ export function maxChatId(employeeId: number): string {
   return row?.chatId ? String(row.chatId) : "";
 }
 
-/** Отправка сообщения в MAX конкретному человеку */
-export async function sendMax(chatId: string, text: string) {
+/**
+ * Отправка сообщения в MAX. Если передан номер вахты, под текстом появляются
+ * кнопки «Подтверждаю» и «Не смогу» — ответ придёт в программу.
+ */
+export async function sendMax(chatId: string, text: string, shiftId = 0) {
   try {
+    const body: any = { text };
+    if (shiftId) {
+      body.attachments = [{
+        type: "inline_keyboard",
+        payload: {
+          buttons: [[
+            { type: "callback", text: "Подтверждаю", payload: `confirm:${shiftId}` },
+            { type: "callback", text: "Не смогу", payload: `decline:${shiftId}` },
+          ]],
+        },
+      }];
+    }
     await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(body),
     });
     return { ok: true, status: "sent", response: "доставлено боту MAX" };
   } catch (e: any) {
@@ -151,28 +166,91 @@ export async function pollMaxUpdates() {
   const updates: any[] = Array.isArray(data?.updates) ? data.updates : [];
   let linked = 0;
 
+  let replies = 0;
+
   for (const u of updates) {
     const type = String(u?.update_type ?? u?.type ?? "");
-    // код приходит либо в payload события запуска, либо текстом «/start код»
-    const payload = String(u?.payload ?? u?.message?.body?.text ?? "").trim();
-    const code = payload.replace(/^\/start\s*/i, "").trim();
-    const user = u?.user ?? u?.message?.sender ?? null;
-    const chatId = String(u?.user_id ?? user?.user_id ?? u?.chat_id ?? "");
-    if (!code || !chatId) continue;
-    if (!["bot_started", "message_created"].includes(type) && type) continue;
+    // поля у разных событий лежат по-разному, поэтому проверяем несколько мест
+    const user = u?.user ?? u?.callback?.user ?? u?.message?.sender ?? null;
+    const chatId = String(
+      user?.user_id ?? u?.user_id ?? u?.message?.recipient?.user_id ?? u?.chat_id ?? "",
+    );
+    const userName = String(user?.name ?? user?.first_name ?? "");
+    const text = String(u?.message?.body?.text ?? u?.message?.text ?? "").trim();
+    const startPayload = String(u?.payload ?? "").trim();
+    const callbackPayload = String(u?.callback?.payload ?? "").trim();
+    const callbackId = String(u?.callback?.callback_id ?? "");
+    const link = chatId
+      ? storage.notifyLinks().find((l: any) => l.channel === "max" && String(l.chatId) === chatId)
+      : null;
+    const employeeId = link?.employeeId ?? 0;
 
-    const row = storage.notifyLinks().find((l: any) => l.channel === "max" && l.code === code);
-    if (!row) continue;
-    storage.updateNotifyLink(row.id, {
-      chatId,
-      name: String(user?.name ?? user?.first_name ?? ""),
-      linkedAt: new Date().toISOString(),
-    });
-    linked++;
+    // 1. нажата кнопка подтверждения вахты
+    if (callbackPayload) {
+      const [action, shiftRaw] = callbackPayload.split(":");
+      const shiftId = Number(shiftRaw) || 0;
+      if (["confirm", "decline"].includes(action)) {
+        storage.createMaxInbox({
+          employeeId, shiftId, chatId, userName,
+          text: action === "confirm" ? "Подтверждаю заезд" : "Не смогу приехать",
+          kind: action, createdAt: new Date().toISOString(),
+        });
+        replies++;
+        if (callbackId) {
+          try {
+            await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+              method: "POST",
+              body: JSON.stringify({
+                message: {
+                  text: action === "confirm"
+                    ? "Спасибо, ответ записан: вы подтвердили заезд."
+                    : "Ответ записан: вы не сможете приехать. С вами свяжется мастер.",
+                },
+              }),
+            });
+          } catch {
+            // ответ на кнопку не критичен — сам ответ уже сохранён
+          }
+        }
+        continue;
+      }
+    }
+
+    // 2. переход по персональной ссылке или сообщение с кодом привязки
+    const code = (startPayload || text).replace(/^\/start\s*/i, "").trim();
+    const codeRow = code
+      ? storage.notifyLinks().find((l: any) => l.channel === "max" && l.code === code)
+      : null;
+    if (codeRow && chatId) {
+      storage.updateNotifyLink(codeRow.id, {
+        chatId, name: userName, linkedAt: new Date().toISOString(),
+      });
+      linked++;
+      try {
+        await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
+          method: "POST",
+          body: JSON.stringify({
+            text: "Готово: уведомления о вахте будут приходить сюда. Отвечать можно прямо в этом чате.",
+          }),
+        });
+      } catch {
+        // приветствие не критично
+      }
+      continue;
+    }
+
+    // 3. обычный ответ сотрудника
+    if (text && type !== "bot_started") {
+      storage.createMaxInbox({
+        employeeId, shiftId: 0, chatId, userName, text,
+        kind: "reply", createdAt: new Date().toISOString(),
+      });
+      replies++;
+    }
   }
 
   if (data?.marker) saveMaxSettings({ marker: Number(data.marker) });
-  return { linked, seen: updates.length };
+  return { linked, replies, seen: updates.length };
 }
 
 /** Раз в минуту проверяем, кто открыл бота, — привязки появляются сами */
@@ -182,11 +260,48 @@ export function startMaxPolling() {
       const s = maxSettings();
       if (!s.enabled || !s.token) return;
       const out = await pollMaxUpdates();
-      if (out.linked) console.log(`[MAX] Привязано сотрудников: ${out.linked}`);
+      if (out.linked || out.replies) {
+        console.log(`[MAX] Привязок: ${out.linked}, ответов: ${out.replies}`);
+      }
     } catch (e) {
       // сеть или токен — молча ждём следующего цикла, ошибку покажем в интерфейсе по кнопке проверки
     }
   };
   setTimeout(tick, 45_000);
   setInterval(tick, 60_000);
+}
+
+/** Ответы сотрудников: что пришло из MAX */
+export function maxInboxRows(limit = 200) {
+  const emps = storage.employees();
+  return storage.maxInbox()
+    .map((r: any) => ({
+      ...r,
+      fio: emps.find((e: any) => e.id === r.employeeId)?.fio ?? (r.userName || "неизвестный профиль"),
+      position: emps.find((e: any) => e.id === r.employeeId)?.position ?? "",
+    }))
+    .sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, limit);
+}
+
+/** Ответить сотруднику из программы */
+export async function replyInMax(employeeId: number, text: string) {
+  const chatId = maxChatId(employeeId);
+  if (!chatId) throw new Error("Сотрудник не привязал бота MAX");
+  const r = await sendMax(chatId, text);
+  if (!r.ok) throw new Error(r.response);
+  storage.createMaxInbox({
+    employeeId, shiftId: 0, chatId, userName: "", text,
+    kind: "outgoing", createdAt: new Date().toISOString(),
+  });
+  return { ok: true };
+}
+
+/** Последний ответ сотрудника по вахте: подтвердил или отказался */
+export function confirmStateByShift() {
+  const map: Record<number, string> = {};
+  for (const r of storage.maxInbox().sort((a: any, b: any) => String(a.createdAt).localeCompare(String(b.createdAt)))) {
+    if (r.shiftId && ["confirm", "decline"].includes(String(r.kind))) map[r.shiftId] = String(r.kind);
+  }
+  return map;
 }

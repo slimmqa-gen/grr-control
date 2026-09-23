@@ -298,6 +298,19 @@ export const notifyLinks = sqliteTable("notify_links", {
 });
 export type NotifyLink = typeof notifyLinks.$inferSelect;
 
+/** Входящие из MAX: ответы сотрудников и нажатия кнопок подтверждения */
+export const maxInbox = sqliteTable("max_inbox", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  employeeId: integer("employee_id").notNull().default(0),
+  shiftId: integer("shift_id").notNull().default(0),
+  chatId: text("chat_id").notNull().default(""),
+  userName: text("user_name").notNull().default(""),
+  text: text("text").notNull().default(""),
+  kind: text("kind").notNull().default("reply"),
+  createdAt: text("created_at").notNull().default(""),
+});
+export type MaxInboxRow = typeof maxInbox.$inferSelect;
+
 /** Настройки бота MAX (хранятся в settings под ключом max) */
 export type MaxSettings = {
   enabled: boolean;
