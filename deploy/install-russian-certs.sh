@@ -36,9 +36,18 @@ if [ -f "$CERT_DIR/russian_trusted_bundle.crt" ]; then
   echo "   убран лишний файл связки из системной папки"
 fi
 # переводы строк из Windows ломают разбор PEM, поэтому убираем их
-tr -d '\r' < "$tmp/root.crt" > "$CERT_DIR/russian_trusted_root_ca.crt"
-tr -d '\r' < "$tmp/sub.crt" > "$CERT_DIR/russian_trusted_sub_ca.crt"
-cat "$CERT_DIR/russian_trusted_root_ca.crt" "$CERT_DIR/russian_trusted_sub_ca.crt" > "$BUNDLE"
+# переводы строк из Windows и отсутствие перевода в конце файла ломают разбор PEM,
+# поэтому убираем \r и гарантируем перевод строки после каждого сертификата
+norm() { tr -d '\r' < "$1" | sed -e '$a\'; }
+norm "$tmp/root.crt" > "$CERT_DIR/russian_trusted_root_ca.crt"
+norm "$tmp/sub.crt" > "$CERT_DIR/russian_trusted_sub_ca.crt"
+{ cat "$CERT_DIR/russian_trusted_root_ca.crt"; cat "$CERT_DIR/russian_trusted_sub_ca.crt"; } > "$BUNDLE"
+
+# связка должна читаться как набор сертификатов, иначе дальше нет смысла
+if ! openssl crl2pkcs7 -nocrl -certfile "$BUNDLE" >/dev/null 2>&1; then
+  echo "   не удалось собрать связку сертификатов — проверьте загруженные файлы"
+  exit 1
+fi
 # --fresh пересобирает хранилище с нуля, чтобы убрать следы прошлой ошибки
 update-ca-certificates --fresh >/dev/null 2>&1 || update-ca-certificates >/dev/null 2>&1 || true
 if ! openssl crl2pkcs7 -nocrl -certfile /etc/ssl/certs/ca-certificates.crt >/dev/null 2>&1; then
