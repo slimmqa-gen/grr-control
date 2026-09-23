@@ -286,6 +286,27 @@ export const insertWorkCalendarSchema = createInsertSchema(workCalendar).omit({ 
 });
 export type WorkCalendarDay = typeof workCalendar.$inferSelect;
 
+/** Привязка сотрудника к мессенджеру: кому и куда отправлять бесплатные уведомления */
+export const notifyLinks = sqliteTable("notify_links", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  employeeId: integer("employee_id").notNull(),
+  channel: text("channel").notNull().default("max"),
+  chatId: text("chat_id").notNull().default(""),
+  code: text("code").notNull().default(""),
+  name: text("name").notNull().default(""),
+  linkedAt: text("linked_at").notNull().default(""),
+});
+export type NotifyLink = typeof notifyLinks.$inferSelect;
+
+/** Настройки бота MAX (хранятся в settings под ключом max) */
+export type MaxSettings = {
+  enabled: boolean;
+  token: string;
+  botName: string;
+  marker: number;
+};
+export const DEFAULT_MAX_SETTINGS: MaxSettings = { enabled: false, token: "", botName: "", marker: 0 };
+
 /** Журнал СМС-уведомлений: что, кому и когда отправлено */
 export const smsLog = sqliteTable("sms_log", {
   id: integer("id").primaryKey({ autoIncrement: true }),

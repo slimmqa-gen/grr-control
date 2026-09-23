@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet } from "lucide-react";
+import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet, Link2, Copy, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -565,6 +565,58 @@ export default function Crew() {
     onError: (e: any) => toast({ title: "Не удалось сохранить", description: String(e.message), variant: "destructive" }),
   });
   const smsRecipients = useQuery<any>({ queryKey: ["/api/sms/recipients"], enabled: tab === "sms" });
+  const [smsChannel, setSmsChannel] = useState("auto");
+
+  // ---- бот MAX ----
+  const maxSettings = useQuery<any>({ queryKey: ["/api/max/settings"], enabled: tab === "sms" });
+  const maxInvites = useQuery<any>({ queryKey: ["/api/max/invites"], enabled: tab === "sms" });
+  const [maxForm, setMaxForm] = useState<any>(null);
+  const [maxToken, setMaxToken] = useState("");
+  const [maxBot, setMaxBot] = useState("");
+  const maxF = maxForm ?? (maxSettings.data ? { ...maxSettings.data } : null);
+
+  const saveMax = useMutation({
+    mutationFn: (v: any) => apiRequest("PUT", "/api/max/settings", v),
+    onSuccess: () => {
+      setMaxToken(""); setMaxForm(null);
+      queryClient.invalidateQueries();
+      toast({ title: "Настройки бота MAX сохранены" });
+    },
+    onError: (e: any) => toast({ title: "Не удалось сохранить", description: String(e.message), variant: "destructive" }),
+  });
+  const checkMax = useMutation({
+    mutationFn: async () => {
+      const r = await apiRequest("GET", "/api/max/check");
+      return await r.json();
+    },
+    onSuccess: (d: any) => setMaxBot(`${d.name || "бот"}${d.username ? ` (@${d.username})` : ""}`),
+    onError: (e: any) => toast({ title: "Бот не отвечает", description: String(e.message), variant: "destructive" }),
+  });
+  const pollMax = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/max/poll", {}),
+    onSuccess: async (r: any) => {
+      const out = await r.json();
+      queryClient.invalidateQueries();
+      toast({
+        title: out.linked ? `Привязано новых: ${out.linked}` : "Новых привязок нет",
+        description: "Привязка появляется после того, как человек открыл бота по своей ссылке",
+      });
+    },
+    onError: (e: any) => toast({ title: "Проверка не прошла", description: String(e.message), variant: "destructive" }),
+  });
+  const unlinkMax = useMutation({
+    mutationFn: (employeeId: number) => apiRequest("DELETE", `/api/max/links/${employeeId}`),
+    onSuccess: () => { queryClient.invalidateQueries(); toast({ title: "Привязка снята" }); },
+  });
+
+  const copyText = async (text: string, title: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title });
+    } catch {
+      toast({ title: "Скопировать не удалось", description: text, variant: "destructive" });
+    }
+  };
   const [smsPicked, setSmsPicked] = useState<number[]>([]);
   const [smsQ, setSmsQ] = useState("");
   const [smsObject, setSmsObject] = useState("all");
@@ -595,6 +647,7 @@ export default function Crew() {
   const sendToPicked = useMutation({
     mutationFn: () => apiRequest("POST", "/api/sms/send-to", {
       employeeIds: smsPicked,
+      channel: smsChannel,
       phones: Object.fromEntries(
         Object.entries(smsPhones).filter(([id, v]) => smsPicked.includes(Number(id)) && phoneOk(String(v)))),
       savePhones: smsSavePhones,
@@ -2133,6 +2186,145 @@ export default function Crew() {
           </Section>
 
           <Section
+            title="Уведомления через бота MAX"
+            description="Сообщения в MAX бесплатные. Сотрудник один раз открывает бота по своей ссылке — дальше вызовы уходят сами."
+            actions={
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm" variant="outline" onClick={() => checkMax.mutate()}
+                  disabled={checkMax.isPending} data-testid="button-max-check"
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Проверить бота
+                </Button>
+                {maxBot && <Badge variant="secondary" data-testid="text-max-bot">{maxBot}</Badge>}
+              </div>
+            }
+          >
+            {!maxF ? <Loading rows={2} /> : (
+              <>
+                <div className="mb-4 flex items-center gap-3 rounded-md border p-3">
+                  <Switch
+                    checked={!!maxF.enabled}
+                    onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, enabled: v })}
+                    data-testid="switch-max-enabled"
+                  />
+                  <div>
+                    <div className="text-sm font-medium">Отправлять через MAX, когда человек привязан</div>
+                    <div className="text-xs text-muted-foreground">
+                      Кто не привязан — получит СМС, если номер указан
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Имя бота в MAX</label>
+                    <Input
+                      value={maxF.botName ?? ""} onChange={(e) => setMaxForm({ ...maxF, botName: e.target.value })}
+                      placeholder="например pbk_vahta_bot"
+                      data-testid="input-max-botname"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Токен бота</label>
+                    <Input
+                      type="password" value={maxToken}
+                      placeholder={maxF.hasToken ? "сохранён, можно не вводить" : "вставьте токен из раздела «Чат-боты»"}
+                      onChange={(e) => setMaxToken(e.target.value)}
+                      data-testid="input-max-token"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <Button
+                      onClick={() => saveMax.mutate({ ...maxF, ...(maxToken ? { token: maxToken } : {}) })}
+                      disabled={saveMax.isPending} data-testid="button-max-save"
+                    >
+                      <Check className="mr-2 h-4 w-4" />
+                      Сохранить
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-medium">Персональные ссылки для сотрудников</div>
+                  <Button
+                    size="sm" variant="outline" onClick={() => pollMax.mutate()}
+                    disabled={pollMax.isPending} data-testid="button-max-poll"
+                  >
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    Проверить новые привязки
+                  </Button>
+                </div>
+
+                {maxInvites.isLoading ? <Loading rows={3} /> : (
+                  <div className="mt-2 overflow-x-auto">
+                    <table className="w-full text-sm" data-testid="table-max-invites">
+                      <thead>
+                        <tr className="border-b text-left text-xs text-muted-foreground">
+                          <th className="py-2 pr-3 font-medium">Сотрудник</th>
+                          <th className="py-2 pr-3 font-medium">Состояние</th>
+                          <th className="py-2 pr-3 font-medium">Ссылка-приглашение</th>
+                          <th className="py-2 pr-0" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(maxInvites.data?.rows ?? []).map((r: any) => (
+                          <tr key={r.employeeId} className="border-b" data-testid={`max-row-${r.employeeId}`}>
+                            <td className="py-2 pr-3">
+                              <div className="font-medium">{r.fio}</div>
+                              <div className="text-xs text-muted-foreground">{r.position}</div>
+                            </td>
+                            <td className="py-2 pr-3">
+                              {r.linked ? (
+                                <Badge variant="outline" className="border-emerald-500 text-[11px] text-emerald-600">
+                                  привязан
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-[11px]">не привязан</Badge>
+                              )}
+                            </td>
+                            <td className="py-2 pr-3 text-xs text-muted-foreground">
+                              {r.link || "укажите имя бота выше"}
+                            </td>
+                            <td className="py-2 pr-0 text-right">
+                              {r.link && (
+                                <Button
+                                  size="sm" variant="ghost"
+                                  onClick={() => copyText(r.link, `Ссылка для ${r.fio} скопирована`)}
+                                  data-testid={`max-copy-${r.employeeId}`}
+                                >
+                                  <Copy className="mr-2 h-4 w-4" />
+                                  Копировать
+                                </Button>
+                              )}
+                              {r.linked && (
+                                <Button
+                                  size="sm" variant="ghost"
+                                  onClick={() => unlinkMax.mutate(r.employeeId)}
+                                  data-testid={`max-unlink-${r.employeeId}`}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                <div className="mt-3 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
+                  Бот создаётся на верифицированном профиле организации, ИП или самозанятого на платформе MAX
+                  для партнёров, токен берётся в разделе «Чат-боты». Написать первым по номеру телефона MAX
+                  не позволяет: отправьте человеку его ссылку любым способом, он перейдёт — и привязка появится сама.
+                </div>
+              </>
+            )}
+          </Section>
+
+          <Section
             title="Кого вызывать"
             description="Заезды в ближайшие дни. Программа отправляет каждому один раз — повторно кнопкой не задублируется."
             actions={
@@ -2230,10 +2422,23 @@ export default function Crew() {
                   </SelectContent>
                 </Select>
               </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Канал отправки</label>
+                <Select value={smsChannel} onValueChange={setSmsChannel}>
+                  <SelectTrigger data-testid="filter-sms-channel"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Сначала MAX, иначе СМС</SelectItem>
+                    <SelectItem value="max">Только MAX</SelectItem>
+                    <SelectItem value="sms">Только СМС</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="flex items-end gap-2">
                 <Button
                   size="sm" variant="outline"
-                  onClick={() => setSmsPicked(smsRows.filter((r: any) => rowPhoneOk(r)).map((r: any) => r.employeeId))}
+                  onClick={() => setSmsPicked(smsRows
+                    .filter((r: any) => rowPhoneOk(r) || r.maxLinked)
+                    .map((r: any) => r.employeeId))}
                   data-testid="button-sms-pick-all"
                 >
                   Отметить всех в списке
@@ -2311,7 +2516,7 @@ export default function Crew() {
                         <td className="py-2 pr-2">
                           <Checkbox
                             checked={smsPicked.includes(r.employeeId)}
-                            disabled={!rowPhoneOk(r)}
+                            disabled={!rowPhoneOk(r) && !r.maxLinked}
                             onCheckedChange={() => togglePicked(r.employeeId)}
                             data-testid={`sms-check-${r.employeeId}`}
                           />
@@ -2322,6 +2527,12 @@ export default function Crew() {
                         </td>
                         <td className="py-2 pr-3">{r.object || "—"}</td>
                         <td className="py-2 pr-3">
+                          {r.maxLinked && (
+                            <Badge variant="outline" className="mr-2 border-emerald-500 text-[11px] text-emerald-600">
+                              <Link2 className="mr-1 h-3 w-3" />
+                              MAX
+                            </Badge>
+                          )}
                           {r.phoneOk ? (
                             <span className="num">{r.phone}</span>
                           ) : (

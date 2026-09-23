@@ -7,6 +7,7 @@
  */
 import { storage } from "./storage";
 import { DEFAULT_SMS_SETTINGS, type SmsSettings } from "@shared/schema";
+import { maxChatId, sendMax, maxSettings } from "./max";
 
 const SMSC_SEND = "https://smsc.ru/sys/send.php";
 const SMSC_BALANCE = "https://smsc.ru/sys/balance.php";
@@ -190,17 +191,18 @@ export function pendingCallouts(daysBeforeOverride?: number): Callout[] {
 }
 
 /** Отправка вызовов: только тем, кому ещё не отправляли и у кого есть номер */
-export async function runCallouts(shiftIds?: number[]) {
+export async function runCallouts(shiftIds?: number[], channel: Channel = "auto") {
   const list = pendingCallouts().filter((c) =>
-    (!shiftIds || shiftIds.includes(c.shiftId)) && !c.sentAt && c.phoneOk);
+    (!shiftIds || shiftIds.includes(c.shiftId)) && !c.sentAt && (c.phoneOk || !!maxChatId(c.employeeId)));
   const results: { fio: string; phone: string; ok: boolean; response: string }[] = [];
   for (const c of list) {
-    const r = await sendSms(c.phone, c.text);
+    const r = await sendOne(c.employeeId, c.phone, c.text, channel);
     storage.createSmsLog({
-      employeeId: c.employeeId, shiftId: c.shiftId, phone: c.phone, text: c.text,
-      kind: "callout", status: r.status, response: r.response, createdAt: new Date().toISOString(),
+      employeeId: c.employeeId, shiftId: c.shiftId, phone: r.via === "max" ? "MAX" : c.phone, text: c.text,
+      kind: r.via === "max" ? "max-callout" : "callout",
+      status: r.status, response: r.response, createdAt: new Date().toISOString(),
     });
-    results.push({ fio: c.fio, phone: c.phone, ok: r.ok, response: r.response });
+    results.push({ fio: c.fio, phone: r.via === "max" ? "MAX" : c.phone, ok: r.ok, response: r.response });
   }
   const skipped = pendingCallouts().filter((c) => !c.phoneOk && !c.sentAt).length;
   return { sent: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, skipped, results };
@@ -211,6 +213,26 @@ export async function runCallouts(shiftIds?: number[]) {
  * и подставляются данные ближайшей вахты сотрудника. Дублей программа не проверяет:
  * это ручная отправка по решению руководителя.
  */
+export type Channel = "auto" | "sms" | "max";
+
+/**
+ * Один получатель: бесплатный MAX, если сотрудник привязан, иначе СМС.
+ * Канал можно задать жёстко — тогда отправка идёт только выбранным способом.
+ */
+async function sendOne(employeeId: number, phone: string, text: string, channel: Channel) {
+  const linked = employeeId ? maxChatId(employeeId) : "";
+  const maxOn = maxSettings().enabled && !!maxSettings().token;
+  const useMax = channel === "max" || (channel === "auto" && maxOn && !!linked);
+
+  if (useMax) {
+    if (!linked) return { ok: false, status: "error", response: "Сотрудник не привязал бота MAX", via: "max" };
+    const r = await sendMax(linked, text);
+    return { ...r, via: "max" };
+  }
+  const r = await sendSms(phone, text);
+  return { ...r, via: "sms" };
+}
+
 export async function sendToEmployees(
   employeeIds: number[],
   customText?: string,
@@ -218,6 +240,7 @@ export async function sendToEmployees(
   phoneOverrides?: Record<string, string>,
   /** Сохранять введённые вручную номера в карточки сотрудников */
   savePhones = false,
+  channel: Channel = "auto",
 ) {
   const s = smsSettings();
   const today = todayIso();
@@ -256,12 +279,13 @@ export async function sendToEmployees(
       storage.updateEmployee(id, { phone: manual });
     }
 
-    const r = await sendSms(phone, text);
+    const r = await sendOne(id, phone, text, channel);
     storage.createSmsLog({
-      employeeId: id, shiftId: shift?.id ?? 0, phone, text,
-      kind: "manual", status: r.status, response: r.response, createdAt: new Date().toISOString(),
+      employeeId: id, shiftId: shift?.id ?? 0, phone: r.via === "max" ? "MAX" : phone, text,
+      kind: r.via === "max" ? "max" : "manual",
+      status: r.status, response: r.response, createdAt: new Date().toISOString(),
     });
-    results.push({ employeeId: id, fio: e.fio ?? "", phone, ok: r.ok, response: r.response });
+    results.push({ employeeId: id, fio: e.fio ?? "", phone: r.via === "max" ? "MAX" : phone, ok: r.ok, response: r.response });
   }
   return { sent: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results };
 }
@@ -310,6 +334,7 @@ export function smsRecipients() {
     });
     return {
       employeeId: e.id, fio: e.fio, position: e.position, objectId: e.objectId, object,
+      maxLinked: !!maxChatId(e.id),
       phone: e.phone ?? "", phoneOk: !!normalizePhone(e.phone ?? ""),
       shiftStart: shift?.startDate ?? "", shiftEnd: shift?.endDate ?? "",
       daysLeft: shift ? daysLeft : null,

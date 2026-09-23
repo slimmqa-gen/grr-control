@@ -3,7 +3,7 @@ import {
   importLogs, settings, equipment, costItems, inventoryItems, DEFAULT_THRESHOLDS, POSITIONS,
   labs, analysisTypes, samples, sampleMoves, labBatches, assays, coreLogs, coreCuts,
   users, sessions, auditLog, importProfiles, synonyms, excelTemplates,
-  estimates, estimateLines, depthRates, calendarPlans, calendarStages, employeeEvents, dashboardNotes, workCalendar, smsLog,
+  estimates, estimateLines, depthRates, calendarPlans, calendarStages, employeeEvents, dashboardNotes, workCalendar, smsLog, notifyLinks,
 } from "@shared/schema";
 import type {
   ObjectRow, Rig, Brigade, Report, Cost, Fuel, Inventory, Employee, Shift, Position, ImportLog, Thresholds,
@@ -179,6 +179,11 @@ CREATE TABLE IF NOT EXISTS employee_events (
   kind TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
   destination TEXT NOT NULL DEFAULT '', destination_object_id INTEGER NOT NULL DEFAULT 0,
   note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS notify_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
+  channel TEXT NOT NULL DEFAULT 'max', chat_id TEXT NOT NULL DEFAULT '',
+  code TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '',
+  linked_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS sms_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL DEFAULT 0,
   shift_id INTEGER NOT NULL DEFAULT 0, phone TEXT NOT NULL, text TEXT NOT NULL,
@@ -597,6 +602,11 @@ export const storage = {
     return db.delete(employees).where(eq(employees.id, id)).run();
   },
 
+  notifyLinks: () => db.select().from(notifyLinks).all(),
+  createNotifyLink: (v: any) => db.insert(notifyLinks).values(v).returning().get(),
+  updateNotifyLink: (id: number, v: any) =>
+    db.update(notifyLinks).set(v).where(eq(notifyLinks.id, id)).returning().get(),
+  deleteNotifyLink: (id: number) => db.delete(notifyLinks).where(eq(notifyLinks.id, id)).run(),
   smsLog: () => db.select().from(smsLog).all(),
   createSmsLog: (v: any) => db.insert(smsLog).values(v).returning().get(),
   workCalendar: () => db.select().from(workCalendar).all(),

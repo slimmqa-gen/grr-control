@@ -10,6 +10,9 @@ import {
   publicSmsSettings, saveSmsSettings, smsSettings, smsBalance, pendingCallouts, runCallouts, sendSms,
   sendToEmployees, smsRecipients, sendToPhones,
 } from "./sms";
+import {
+  publicMaxSettings, saveMaxSettings, maxSettings, maxBotInfo, inviteFor, pollMaxUpdates, unlinkMax,
+} from "./max";
 import { buildWorkbook, buildSummaryWorkbook, type SheetKey } from "./excel";
 import {
   parseUpload, analyzeRows, commitImport, suggestMapping, buildTemplate,
@@ -842,6 +845,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.delete("/api/shifts/:id", (req, res) => { storage.deleteShift(Number(req.params.id)); res.json({ ok: true }); });
 
+  // ---------- Уведомления через бота MAX ----------
+  app.get("/api/max/settings", (req, res) => {
+    try { res.json(publicMaxSettings()); } catch (e) { fail(res, e); }
+  });
+
+  app.put("/api/max/settings", (req, res) => {
+    try {
+      const b = req.body ?? {};
+      const patch: any = {};
+      if (b.enabled !== undefined) patch.enabled = !!b.enabled;
+      if (b.botName !== undefined) patch.botName = String(b.botName).replace(/^@/, "").trim();
+      if (b.token) patch.token = String(b.token).trim();
+      if (b.clearToken) patch.token = "";
+      saveMaxSettings(patch);
+      audit(req, "Настройки бота MAX", "max", `бот: ${patch.botName ?? (maxSettings().botName || "не указан")}`);
+      res.json(publicMaxSettings());
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Проверка токена: программа спрашивает MAX, что это за бот */
+  app.get("/api/max/check", async (req, res) => {
+    try { res.json(await maxBotInfo()); } catch (e) { fail(res, e); }
+  });
+
+  /** Персональные ссылки-приглашения и статус привязки по всем сотрудникам */
+  app.get("/api/max/invites", (req, res) => {
+    try {
+      const emps = storage.employees();
+      const rows = emps.map((e: any) => ({ fio: e.fio, position: e.position, ...inviteFor(e.id) }))
+        .sort((a: any, b: any) => String(a.fio).localeCompare(String(b.fio), "ru"));
+      res.json({ rows, settings: publicMaxSettings() });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Проверить, кто открыл бота: привязки появляются сразу */
+  app.post("/api/max/poll", async (req, res) => {
+    try {
+      const out = await pollMaxUpdates();
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
+  app.delete("/api/max/links/:employeeId", (req, res) => {
+    try {
+      const out = unlinkMax(Number(req.params.employeeId));
+      audit(req, "Отвязка MAX", "max", `сотрудник ${req.params.employeeId}`);
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
   // ---------- СМС-вызов на вахту (шлюз SMSC.ru) ----------
   app.get("/api/sms/settings", (req, res) => {
     try { res.json(publicSmsSettings()); } catch (e) { fail(res, e); }
@@ -895,8 +948,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const phones = (req.body?.phones && typeof req.body.phones === "object") ? req.body.phones : undefined;
       const savePhones = !!req.body?.savePhones;
 
+      const channel = ["auto", "sms", "max"].includes(String(req.body?.channel))
+        ? String(req.body.channel) as any : "auto";
       const out = ids.length
-        ? await sendToEmployees(ids, text, phones, savePhones)
+        ? await sendToEmployees(ids, text, phones, savePhones, channel)
         : { sent: 0, failed: 0, results: [] as any[] };
       if (extra.length) {
         const plain = await sendToPhones(extra, String(text ?? smsSettings().template));
@@ -925,7 +980,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/sms/run", async (req, res) => {
     try {
       const ids = Array.isArray(req.body?.shiftIds) ? req.body.shiftIds.map(Number) : undefined;
-      const out = await runCallouts(ids);
+      const channel = ["auto", "sms", "max"].includes(String(req.body?.channel))
+        ? String(req.body.channel) as any : "auto";
+      const out = await runCallouts(ids, channel);
       audit(req, "Отправка СМС-вызовов", "sms", `отправлено ${out.sent}, с ошибкой ${out.failed}`);
       res.json(out);
     } catch (e) { fail(res, e); }

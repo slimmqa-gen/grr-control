@@ -5,6 +5,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "node:http";
 import { startSmsScheduler } from "./sms";
+import { startMaxPolling } from "./max";
 
 const app = express();
 const httpServer = createServer(app);
@@ -67,6 +68,8 @@ app.use((req, res, next) => {
   await registerRoutes(httpServer, app);
   // ежедневная проверка: кому пора отправить СМС-вызов на вахту
   startSmsScheduler();
+  // привязка сотрудников к боту MAX происходит сама после перехода по ссылке
+  startMaxPolling();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
