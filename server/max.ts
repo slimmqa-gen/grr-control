@@ -187,6 +187,24 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
   if (callbackPayload) {
     const [action, shiftRaw] = callbackPayload.split(":");
     const shiftId = Number(shiftRaw) || 0;
+
+    // ответственный нажал «Ответить» под оповещением
+    if (action === "reply") {
+      const target = shiftId;
+      const allowed = String(maxSettings().reportChatIds ?? "")
+        .split(",").map((x) => x.trim()).filter(Boolean);
+      if (link && target && allowed.includes(chatId)) {
+        storage.updateNotifyLink(link.id, { replyTo: target });
+        const e = storage.employees().find((x: any) => x.id === target);
+        try {
+          await sendMax(chatId, `Напишите ответ для ${e?.fio ?? "сотрудника"} одним сообщением.`);
+        } catch {
+          // подсказка не критична
+        }
+      }
+      return { linked, replies };
+    }
+
     if (["confirm", "decline"].includes(action)) {
       storage.createMaxInbox({
         employeeId, shiftId, chatId, userName,
@@ -250,7 +268,21 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     return { linked, replies };
   }
 
-  // 3. причина отказа: человек уже нажал «Не смогу», ждём пояснение текстом
+  // 3. ответственный отвечает сотруднику из MAX: следующее сообщение — это ответ
+  if (text && link && Number(link.replyTo) > 0) {
+    const target = Number(link.replyTo);
+    storage.updateNotifyLink(link.id, { replyTo: 0 });
+    try {
+      await replyInMax(target, text);
+      const e = storage.employees().find((x: any) => x.id === target);
+      await sendMax(chatId, `Отправлено: ${e?.fio ?? "сотруднику"}.`);
+    } catch (e) {
+      await sendMax(chatId, `Не удалось отправить: ${String((e as Error)?.message ?? e)}`);
+    }
+    return { linked, replies };
+  }
+
+  // 4. причина отказа: человек уже нажал «Не смогу», ждём пояснение текстом
   if (text && link && Number(link.awaitingShift) > 0) {
     const shiftId = Number(link.awaitingShift);
     storage.createMaxInbox({
@@ -264,11 +296,14 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     } catch {
       // подтверждение приёма не критично
     }
-    await notifyResponsible(`Причина отказа. ${employeeName(employeeId, userName)}: ${text}`);
+    await notifyResponsible(
+      `Причина отказа. ${employeeName(employeeId, userName)}: ${text}`,
+      "decline", "", employeeId,
+    );
     return { linked, replies };
   }
 
-  // 4. запрос сводки: доступен только тем, кому разрешена рассылка сводок
+  // 5. запрос сводки: доступен только тем, кому разрешена рассылка сводок
   if (/^\/?(статус|сводка|status)$/i.test(text)) {
     const allowed = String(maxSettings().reportChatIds ?? "")
       .split(",").map((x) => x.trim()).filter(Boolean);
@@ -285,7 +320,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     return { linked, replies };
   }
 
-  // 5. обычный ответ сотрудника — попадёт в переписку
+  // 6. обычный ответ сотрудника — попадёт в переписку
   if (text && type !== "bot_started") {
     storage.createMaxInbox({
       employeeId, shiftId: 0, chatId, userName, text,
@@ -294,8 +329,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     replies++;
     await notifyResponsible(
       `Новое сообщение от ${employeeName(employeeId, userName)}: ${text}`,
-      "message",
-      chatId,
+      "message", chatId, employeeId,
     );
   }
   return { linked, replies };
@@ -456,6 +490,8 @@ export async function notifyResponsible(
   text: string,
   kind: "decline" | "message" | "confirm" = "decline",
   exceptChatId = "",
+  /** сотрудник, которому ответственный сможет ответить кнопкой прямо из MAX */
+  replyEmployeeId = 0,
 ) {
   const s = maxSettings();
   const allow = kind === "message" ? s.notifyMessage
@@ -467,7 +503,9 @@ export async function notifyResponsible(
   let sent = 0;
   for (const chatId of targets) {
     try {
-      const r = await sendMax(chatId, text);
+      const r = replyEmployeeId
+        ? await sendMaxWithReply(chatId, text, replyEmployeeId)
+        : await sendMax(chatId, text);
       if (r.ok) sent++;
     } catch {
       // не дошло в MAX — ниже может уйти СМС
@@ -488,6 +526,29 @@ export async function notifyResponsible(
     }
   }
   return { sent };
+}
+
+/** Оповещение с кнопкой «Ответить», чтобы ответить сотруднику прямо из MAX */
+async function sendMaxWithReply(chatId: string, text: string, employeeId: number) {
+  try {
+    await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
+      method: "POST",
+      body: JSON.stringify({
+        text,
+        attachments: [{
+          type: "inline_keyboard",
+          payload: {
+            buttons: [[
+              { type: "callback", text: "Ответить", payload: `reply:${employeeId}`, intent: "positive" },
+            ]],
+          },
+        }],
+      }),
+    });
+    return { ok: true, status: "sent", response: "доставлено боту MAX" };
+  } catch (e: any) {
+    return { ok: false, status: "error", response: String(e?.message ?? e) };
+  }
 }
 
 /** Переписка: список диалогов с последним сообщением и числом непрочитанных */

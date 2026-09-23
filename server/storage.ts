@@ -189,6 +189,7 @@ CREATE TABLE IF NOT EXISTS notify_links (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
   channel TEXT NOT NULL DEFAULT 'max', chat_id TEXT NOT NULL DEFAULT '',
   code TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', awaiting_shift INTEGER NOT NULL DEFAULT 0,
+  reply_to INTEGER NOT NULL DEFAULT 0,
   linked_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS sms_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL DEFAULT 0,
@@ -240,6 +241,9 @@ try {
   const nl = sqlite.prepare("PRAGMA table_info(notify_links)").all() as any[];
   if (nl.length && !nl.some((c) => c.name === "awaiting_shift")) {
     sqlite.exec("ALTER TABLE notify_links ADD COLUMN awaiting_shift INTEGER NOT NULL DEFAULT 0");
+  }
+  if (nl.length && !nl.some((c) => c.name === "reply_to")) {
+    sqlite.exec("ALTER TABLE notify_links ADD COLUMN reply_to INTEGER NOT NULL DEFAULT 0");
   }
   const mi = sqlite.prepare("PRAGMA table_info(max_inbox)").all() as any[];
   if (mi.length && !mi.some((c) => c.name === "seen")) {

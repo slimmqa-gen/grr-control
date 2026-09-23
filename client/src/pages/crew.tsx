@@ -2439,7 +2439,7 @@ export default function Crew() {
                       </div>
                     </div>
                     <div>
-                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Час отправки</label>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Час напоминания</label>
                       <Input
                         type="number" min={0} max={23} value={maxF.reportHour ?? 18}
                         onChange={(e) => setMaxForm({ ...maxF, reportHour: Number(e.target.value) })}
@@ -2447,6 +2447,13 @@ export default function Crew() {
                       />
                     </div>
                   </div>
+                  <div className="mt-2 rounded-md bg-muted p-2 text-xs text-muted-foreground">
+                    Ответственным доступно из MAX: сводка по команде «статус», оповещения об отказах и сообщениях,
+                    а также кнопка «Ответить» под оповещением — нажал, написал сообщение, оно ушло сотруднику.
+                    Чтобы человек попал в этот список, он должен быть в справочнике сотрудников и открыть свою
+                    персональную ссылку из таблицы ниже.
+                  </div>
+
                   <div className="mt-3 space-y-2">
                     <label className="flex items-center gap-2 text-sm">
                       <Checkbox

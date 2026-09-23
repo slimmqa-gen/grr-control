@@ -297,6 +297,8 @@ export const notifyLinks = sqliteTable("notify_links", {
   linkedAt: text("linked_at").notNull().default(""),
   /** номер вахты, по которой ждём от человека причину отказа */
   awaitingShift: integer("awaiting_shift").notNull().default(0),
+  /** кому ответственный отвечает следующим сообщением: id сотрудника */
+  replyTo: integer("reply_to").notNull().default(0),
 });
 export type NotifyLink = typeof notifyLinks.$inferSelect;
 
