@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw } from "lucide-react";
+import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -148,7 +150,7 @@ export default function Crew() {
   const empEventsQ = useList<any>("/api/employee-events");
   const { toast } = useToast();
 
-  const [tab, setTab] = useState<"dash" | "people" | "shifts" | "absence" | "arch" | "cal">("dash");
+  const [tab, setTab] = useState<"dash" | "people" | "shifts" | "absence" | "arch" | "cal" | "sms">("dash");
 
   // фильтры справочника сотрудников
   const [q, setQ] = useState("");
@@ -539,6 +541,55 @@ export default function Crew() {
     },
   });
 
+  // ---- СМС-вызов на вахту ----
+  const smsSettings = useQuery<any>({ queryKey: ["/api/sms/settings"], enabled: tab === "sms" });
+  const smsPending = useQuery<any>({ queryKey: ["/api/sms/pending"], enabled: tab === "sms" });
+  const smsLog = useQuery<any>({ queryKey: ["/api/sms/log"], enabled: tab === "sms" });
+  const [smsForm, setSmsForm] = useState<any>(null);
+  const [smsSecret, setSmsSecret] = useState({ password: "", apikey: "" });
+  const [testPhone, setTestPhone] = useState("");
+  const [smsBalance, setSmsBalance] = useState("");
+
+  // подставляем сохранённые настройки в форму один раз после загрузки
+  const smsData = smsSettings.data;
+  const form = smsForm ?? (smsData ? { ...smsData } : null);
+
+  const saveSms = useMutation({
+    mutationFn: (v: any) => apiRequest("PUT", "/api/sms/settings", v),
+    onSuccess: () => {
+      setSmsSecret({ password: "", apikey: "" });
+      setSmsForm(null);
+      queryClient.invalidateQueries();
+      toast({ title: "Настройки СМС сохранены" });
+    },
+    onError: (e: any) => toast({ title: "Не удалось сохранить", description: String(e.message), variant: "destructive" }),
+  });
+  const runSms = useMutation({
+    mutationFn: (shiftIds?: number[]) => apiRequest("POST", "/api/sms/run", shiftIds ? { shiftIds } : {}),
+    onSuccess: async (r: any) => {
+      const out = await r.json();
+      queryClient.invalidateQueries();
+      toast({
+        title: `Отправлено ${out.sent}`,
+        description: `С ошибкой ${out.failed}, без номера ${out.skipped}`,
+      });
+    },
+    onError: (e: any) => toast({ title: "Отправка не прошла", description: String(e.message), variant: "destructive" }),
+  });
+  const testSms = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/sms/test", { phone: testPhone }),
+    onSuccess: () => { queryClient.invalidateQueries(); toast({ title: "Проверочное сообщение отправлено" }); },
+    onError: (e: any) => toast({ title: "Сообщение не ушло", description: String(e.message), variant: "destructive" }),
+  });
+  const checkBalance = useMutation({
+    mutationFn: async () => {
+      const r = await apiRequest("GET", "/api/sms/balance");
+      return await r.json();
+    },
+    onSuccess: (d: any) => setSmsBalance(`${d.balance} ${d.currency}`),
+    onError: (e: any) => toast({ title: "Баланс не получен", description: String(e.message), variant: "destructive" }),
+  });
+
   const yearOptions = (() => {
     const y = new Date().getFullYear();
     return [String(y), String(y - 1), String(y - 2)];
@@ -704,7 +755,7 @@ export default function Crew() {
       />
 
       {/* вкладки */}
-      <div className="mb-4 inline-flex rounded-md border p-1" role="tablist">
+      <div className="mb-4 flex flex-wrap gap-1 rounded-md border p-1" role="tablist">
         <Button
           size="sm"
           variant={tab === "dash" ? "default" : "ghost"}
@@ -763,6 +814,15 @@ export default function Crew() {
         >
           <CalendarDays className="mr-2 h-4 w-4" />
           Календарь
+        </Button>
+        <Button
+          size="sm"
+          variant={tab === "sms" ? "default" : "ghost"}
+          onClick={() => setTab("sms")}
+          data-testid="tab-sms"
+        >
+          <MessageSquare className="mr-2 h-4 w-4" />
+          Вызов на вахту
         </Button>
       </div>
 
@@ -1861,6 +1921,264 @@ export default function Crew() {
                   и поправьте дни вручную, когда постановление выйдет.
                 </div>
               </>
+            )}
+          </Section>
+        </>
+      )}
+
+
+      {tab === "sms" && (
+        <>
+          <Section
+            title="Вызов на вахту по СМС"
+            description="Программа сама отправляет напоминание о заезде через шлюз SMSC.ru за выбранное число дней"
+            actions={
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm" variant="outline" data-testid="button-sms-balance"
+                  disabled={checkBalance.isPending} onClick={() => checkBalance.mutate()}
+                >
+                  <Wallet className="mr-2 h-4 w-4" />
+                  Баланс
+                </Button>
+                {smsBalance && <Badge variant="secondary" data-testid="text-sms-balance">{smsBalance}</Badge>}
+              </div>
+            }
+          >
+            {!form ? <Loading rows={3} /> : (
+              <>
+                <div className="mb-4 flex items-center gap-3 rounded-md border p-3">
+                  <Switch
+                    checked={!!form.enabled}
+                    onCheckedChange={(v: boolean) => setSmsForm({ ...form, enabled: v })}
+                    data-testid="switch-sms-enabled"
+                  />
+                  <div>
+                    <div className="text-sm font-medium">Автоматическая отправка</div>
+                    <div className="text-xs text-muted-foreground">
+                      Раз в день программа проверяет ближайшие заезды и отправляет вызов каждому один раз
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Логин SMSC</label>
+                    <Input
+                      value={form.login ?? ""} onChange={(e) => setSmsForm({ ...form, login: e.target.value })}
+                      data-testid="input-sms-login"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">Пароль SMSC</label>
+                    <Input
+                      type="password" value={smsSecret.password}
+                      placeholder={form.hasPassword ? "сохранён, можно не вводить" : "введите пароль"}
+                      onChange={(e) => setSmsSecret({ ...smsSecret, password: e.target.value })}
+                      data-testid="input-sms-password"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                      API-ключ (вместо пароля)
+                    </label>
+                    <Input
+                      type="password" value={smsSecret.apikey}
+                      placeholder={form.hasApikey ? "сохранён, можно не вводить" : "не обязательно"}
+                      onChange={(e) => setSmsSecret({ ...smsSecret, apikey: e.target.value })}
+                      data-testid="input-sms-apikey"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                      Имя отправителя
+                    </label>
+                    <Input
+                      value={form.sender ?? ""} onChange={(e) => setSmsForm({ ...form, sender: e.target.value })}
+                      placeholder="например PBK"
+                      data-testid="input-sms-sender"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                      За сколько дней до заезда
+                    </label>
+                    <Input
+                      type="number" min={0} max={30} value={form.daysBefore ?? 3}
+                      onChange={(e) => setSmsForm({ ...form, daysBefore: Number(e.target.value) })}
+                      data-testid="input-sms-days"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                      Во сколько отправлять, час
+                    </label>
+                    <Input
+                      type="number" min={0} max={23} value={form.sendHour ?? 9}
+                      onChange={(e) => setSmsForm({ ...form, sendHour: Number(e.target.value) })}
+                      data-testid="input-sms-hour"
+                    />
+                  </div>
+                  <div className="lg:col-span-2">
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                      Телефон для вопросов (подставляется в текст)
+                    </label>
+                    <Input
+                      value={form.contact ?? ""} onChange={(e) => setSmsForm({ ...form, contact: e.target.value })}
+                      data-testid="input-sms-contact"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Текст сообщения</label>
+                  <Textarea
+                    rows={3} value={form.template ?? ""}
+                    onChange={(e) => setSmsForm({ ...form, template: e.target.value })}
+                    data-testid="input-sms-template"
+                  />
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Подстановки: {"{фио}"}, {"{дата}"} — заезд, {"{выезд}"}, {"{участок}"}, {"{должность}"},
+                    {" "}{"{дней}"} — сколько дней осталось, {"{контакт}"}. Русский текст: 70 символов в одной части
+                    сообщения, дальше каждая часть тарифицируется отдельно.
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-end gap-3">
+                  <Button
+                    onClick={() => saveSms.mutate({
+                      ...form,
+                      ...(smsSecret.password ? { password: smsSecret.password } : {}),
+                      ...(smsSecret.apikey ? { apikey: smsSecret.apikey } : {}),
+                    })}
+                    disabled={saveSms.isPending}
+                    data-testid="button-sms-save"
+                  >
+                    <Check className="mr-2 h-4 w-4" />
+                    Сохранить настройки
+                  </Button>
+                  <div className="flex items-end gap-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Проверка на номер</label>
+                      <Input
+                        value={testPhone} onChange={(e) => setTestPhone(e.target.value)}
+                        placeholder="+7 913 000-00-00" className="w-48"
+                        data-testid="input-sms-test-phone"
+                      />
+                    </div>
+                    <Button
+                      variant="outline" onClick={() => testSms.mutate()}
+                      disabled={!testPhone || testSms.isPending}
+                      data-testid="button-sms-test"
+                    >
+                      <Send className="mr-2 h-4 w-4" />
+                      Отправить проверку
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+          </Section>
+
+          <Section
+            title="Кого вызывать"
+            description="Заезды в ближайшие дни. Программа отправляет каждому один раз — повторно кнопкой не задублируется."
+            actions={
+              <Button
+                size="sm" onClick={() => runSms.mutate(undefined)}
+                disabled={runSms.isPending || !(smsPending.data?.rows ?? []).some((r: any) => !r.sentAt && r.phoneOk)}
+                data-testid="button-sms-run-all"
+              >
+                <Send className="mr-2 h-4 w-4" />
+                Отправить всем
+              </Button>
+            }
+          >
+            {smsPending.isLoading ? <Loading rows={3} /> : (smsPending.data?.rows ?? []).length === 0 ? (
+              <Empty text="В ближайшие дни заездов нет. Измените число дней в настройках выше." />
+            ) : (
+              <div className="space-y-2">
+                {(smsPending.data?.rows ?? []).map((r: any) => (
+                  <div
+                    key={r.shiftId} className="flex flex-wrap items-center gap-3 rounded-md border p-3"
+                    data-testid={`sms-row-${r.shiftId}`}
+                  >
+                    <div className="min-w-[180px] flex-1">
+                      <button
+                        type="button" className="text-left font-medium hover:underline"
+                        onClick={() => openEmployeeCard(r.employeeId)}
+                        data-testid={`sms-open-${r.employeeId}`}
+                      >
+                        {r.fio}
+                      </button>
+                      <div className="text-xs text-muted-foreground">
+                        {r.object} · заезд {ruDate(r.startDate)} · через {nf(r.daysLeft)} дн.
+                      </div>
+                    </div>
+                    <div className="min-w-[160px] text-xs text-muted-foreground">
+                      {r.phoneOk ? r.phone : <span className="text-amber-600">номер не указан или неверный</span>}
+                    </div>
+                    <div className="min-w-[220px] flex-1 text-xs">{r.text}</div>
+                    <Badge variant="outline" className="text-[11px]">частей {nf(r.parts)}</Badge>
+                    {r.sentAt ? (
+                      <Badge variant="secondary" className="text-[11px]">отправлено</Badge>
+                    ) : (
+                      <Button
+                        size="sm" variant="outline" disabled={!r.phoneOk || runSms.isPending}
+                        onClick={() => runSms.mutate([r.shiftId])}
+                        data-testid={`sms-send-${r.shiftId}`}
+                      >
+                        <Send className="mr-2 h-4 w-4" />
+                        Отправить
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          <Section title="Журнал отправок" description="Последние сообщения и ответ шлюза">
+            {smsLog.isLoading ? <Loading rows={3} /> : (smsLog.data?.rows ?? []).length === 0 ? (
+              <Empty text="Сообщений ещё не было." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" data-testid="table-sms-log">
+                  <thead>
+                    <tr className="border-b text-left text-xs text-muted-foreground">
+                      <th className="py-2 pr-3 font-medium">Когда</th>
+                      <th className="py-2 pr-3 font-medium">Кому</th>
+                      <th className="py-2 pr-3 font-medium">Номер</th>
+                      <th className="py-2 pr-3 font-medium">Текст</th>
+                      <th className="py-2 pr-3 font-medium">Результат</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(smsLog.data?.rows ?? []).map((l: any) => (
+                      <tr key={l.id} className="border-b" data-testid={`sms-log-${l.id}`}>
+                        <td className="num py-2 pr-3 whitespace-nowrap">
+                          {String(l.createdAt).slice(8, 10)}.{String(l.createdAt).slice(5, 7)}
+                          {" "}{String(l.createdAt).slice(11, 16)}
+                        </td>
+                        <td className="py-2 pr-3">{l.fio || (l.kind === "test" ? "проверка" : "—")}</td>
+                        <td className="num py-2 pr-3">{l.phone}</td>
+                        <td className="py-2 pr-3 text-xs text-muted-foreground">{l.text}</td>
+                        <td className="py-2 pr-3">
+                          <Badge
+                            variant="outline"
+                            className={cn("text-[11px]", l.status === "sent"
+                              ? "border-emerald-500 text-emerald-600"
+                              : "border-rose-500 text-rose-600")}
+                          >
+                            {l.status === "sent" ? "отправлено" : "ошибка"}
+                          </Badge>
+                          <div className="mt-1 text-xs text-muted-foreground">{l.response}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </Section>
         </>

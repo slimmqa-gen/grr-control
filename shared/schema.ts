@@ -286,6 +286,46 @@ export const insertWorkCalendarSchema = createInsertSchema(workCalendar).omit({ 
 });
 export type WorkCalendarDay = typeof workCalendar.$inferSelect;
 
+/** Журнал СМС-уведомлений: что, кому и когда отправлено */
+export const smsLog = sqliteTable("sms_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  employeeId: integer("employee_id").notNull().default(0),
+  shiftId: integer("shift_id").notNull().default(0),
+  phone: text("phone").notNull(),
+  text: text("text").notNull(),
+  kind: text("kind").notNull().default("callout"),
+  status: text("status").notNull().default("sent"),
+  response: text("response").notNull().default(""),
+  createdAt: text("created_at").notNull().default(""),
+});
+export type SmsLogRow = typeof smsLog.$inferSelect;
+
+/** Настройки СМС-вызова на вахту (хранятся в settings под ключом sms) */
+export type SmsSettings = {
+  enabled: boolean;
+  login: string;
+  password: string;
+  apikey: string;
+  sender: string;
+  daysBefore: number;
+  sendHour: number;
+  contact: string;
+  template: string;
+  lastRun: string;
+};
+export const DEFAULT_SMS_SETTINGS: SmsSettings = {
+  enabled: false,
+  login: "",
+  password: "",
+  apikey: "",
+  sender: "",
+  daysBefore: 3,
+  sendHour: 9,
+  contact: "",
+  template: "ООО ПБК: вызов на вахту {дата}, {участок}. Явка по графику. Вопросы: {контакт}",
+  lastRun: "",
+};
+
 /** Журнал импортов */
 export const importLogs = sqliteTable("import_logs", {
   id: integer("id").primaryKey({ autoIncrement: true }),

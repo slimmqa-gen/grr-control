@@ -6,6 +6,9 @@ import { storage, restoreDemoData } from "./storage";
 import { buildAnalytics } from "./analytics";
 import { employeeTimesheet, allEmployeesTimesheet } from "./hr";
 import { calendarYear, calendarSummary, generateYear, resetCalendarCache, workDayMap } from "./calendar";
+import {
+  publicSmsSettings, saveSmsSettings, smsSettings, smsBalance, pendingCallouts, runCallouts, sendSms,
+} from "./sms";
 import { buildWorkbook, buildSummaryWorkbook, type SheetKey } from "./excel";
 import {
   parseUpload, analyzeRows, commitImport, suggestMapping, buildTemplate,
@@ -837,6 +840,78 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e) { fail(res, e); }
   });
   app.delete("/api/shifts/:id", (req, res) => { storage.deleteShift(Number(req.params.id)); res.json({ ok: true }); });
+
+  // ---------- СМС-вызов на вахту (шлюз SMSC.ru) ----------
+  app.get("/api/sms/settings", (req, res) => {
+    try { res.json(publicSmsSettings()); } catch (e) { fail(res, e); }
+  });
+
+  app.put("/api/sms/settings", (req, res) => {
+    try {
+      const b = req.body ?? {};
+      const patch: any = {};
+      if (b.enabled !== undefined) patch.enabled = !!b.enabled;
+      for (const k of ["login", "sender", "contact", "template"]) {
+        if (b[k] !== undefined) patch[k] = String(b[k]);
+      }
+      // пустая строка означает «не менять» — секрет уже сохранён на сервере
+      if (b.password) patch.password = String(b.password);
+      if (b.apikey) patch.apikey = String(b.apikey);
+      if (b.clearSecrets) { patch.password = ""; patch.apikey = ""; }
+      if (b.daysBefore !== undefined) patch.daysBefore = Number(b.daysBefore);
+      if (b.sendHour !== undefined) patch.sendHour = Number(b.sendHour);
+      saveSmsSettings(patch);
+      audit(req, "Настройки СМС-вызова", "sms", `автоотправка: ${patch.enabled ?? smsSettings().enabled ? "включена" : "выключена"}`);
+      res.json(publicSmsSettings());
+    } catch (e) { fail(res, e); }
+  });
+
+  app.get("/api/sms/balance", async (req, res) => {
+    try { res.json(await smsBalance()); } catch (e) { fail(res, e); }
+  });
+
+  app.get("/api/sms/pending", (req, res) => {
+    try {
+      const days = req.query.days !== undefined ? Number(req.query.days) : undefined;
+      res.json({ rows: pendingCallouts(days), settings: publicSmsSettings() });
+    } catch (e) { fail(res, e); }
+  });
+
+  app.get("/api/sms/log", (req, res) => {
+    try {
+      const emps = storage.employees();
+      const rows = storage.smsLog()
+        .map((l: any) => ({ ...l, fio: emps.find((e: any) => e.id === l.employeeId)?.fio ?? "" }))
+        .sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        .slice(0, 300);
+      res.json({ rows });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Отправить вызовы: всем ожидающим или выбранным вахтам */
+  app.post("/api/sms/run", async (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.shiftIds) ? req.body.shiftIds.map(Number) : undefined;
+      const out = await runCallouts(ids);
+      audit(req, "Отправка СМС-вызовов", "sms", `отправлено ${out.sent}, с ошибкой ${out.failed}`);
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Проверочное сообщение на указанный номер */
+  app.post("/api/sms/test", async (req, res) => {
+    try {
+      const phone = String(req.body?.phone ?? "");
+      const text = String(req.body?.text ?? "Проверка связи: ГРР-Контроль.");
+      const r = await sendSms(phone, text);
+      storage.createSmsLog({
+        employeeId: 0, shiftId: 0, phone, text, kind: "test",
+        status: r.status, response: r.response, createdAt: new Date().toISOString(),
+      });
+      if (!r.ok) throw new Error(r.response);
+      res.json({ ok: true, response: r.response });
+    } catch (e) { fail(res, e); }
+  });
 
   // ---------- Производственный календарь ----------
   app.get("/api/work-calendar/:year", (req, res) => {
