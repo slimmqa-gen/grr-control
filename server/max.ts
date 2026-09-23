@@ -155,6 +155,130 @@ export async function sendMax(chatId: string, text: string, shiftId = 0, withBut
   }
 }
 
+/** Дата в привычном виде: 2026-09-24 → 24.09.2026 */
+const ruDate = (s: string) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)}` : "");
+
+/** Варианты ответа события: для подтверждения — стандартные две кнопки */
+export function eventOptions(ev: any): { text: string; verdict: "yes" | "no" | "choice" }[] {
+  if (ev.kind === "confirm") {
+    return [
+      { text: "Подтверждаю", verdict: "yes" },
+      { text: "Не смогу", verdict: "no" },
+    ];
+  }
+  if (ev.kind === "poll") {
+    let list: string[] = [];
+    try { list = JSON.parse(ev.options || "[]"); } catch { list = []; }
+    return list.filter((x) => String(x).trim()).map((x) => ({ text: String(x).trim(), verdict: "choice" as const }));
+  }
+  return [];
+}
+
+/** Текст события для сотрудника */
+function eventText(ev: any) {
+  const head = ev.title ? `${ev.title}` : "Сообщение от ПБК";
+  const when = ev.eventDate ? `\nДата: ${ruDate(ev.eventDate)}` : "";
+  return `${head}${when}\n\n${ev.text}`;
+}
+
+/** Отправка события или опроса одному сотруднику */
+export async function sendEventTo(ev: any, chatId: string, employeeId: number) {
+  const opts = eventOptions(ev);
+  const body: any = { text: eventText(ev) };
+  if (opts.length) {
+    body.attachments = [{
+      type: "inline_keyboard",
+      payload: {
+        // по одной кнопке в ряд: варианты опроса бывают длинными
+        buttons: opts.map((o, i) => [{
+          type: "callback",
+          text: o.text,
+          payload: `ev:${ev.id}:${i}`,
+          ...(o.verdict === "yes" ? { intent: "positive" } : {}),
+          ...(o.verdict === "no" ? { intent: "negative" } : {}),
+        }]),
+      },
+    }];
+  }
+  try {
+    await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    const prev = storage.maxEventAnswerFor(ev.id, employeeId);
+    if (prev) {
+      storage.updateMaxEventAnswer(prev.id, { sentAt: new Date().toISOString(), chatId });
+    } else {
+      storage.createMaxEventAnswer({
+        eventId: ev.id, employeeId, chatId,
+        answer: "", verdict: "", reason: "",
+        sentAt: new Date().toISOString(), answeredAt: "",
+      });
+    }
+    return { ok: true, status: "sent", response: "доставлено боту MAX" };
+  } catch (e: any) {
+    return { ok: false, status: "error", response: String(e?.message ?? e) };
+  }
+}
+
+/** Рассылка события выбранным сотрудникам (только привязанным к боту) */
+export async function sendEventToEmployees(eventId: number, employeeIds: number[]) {
+  const ev = storage.maxEvent(eventId);
+  if (!ev) return { sent: 0, errors: ["Событие не найдено"] };
+  const links = storage.notifyLinks();
+  let sent = 0;
+  const errors: string[] = [];
+  for (const [i, id] of employeeIds.entries()) {
+    const link = links.find((l: any) => l.employeeId === id && l.channel === "max" && l.chatId);
+    const fio = storage.employees().find((e: any) => e.id === id)?.fio ?? `#${id}`;
+    if (!link) { errors.push(`${fio}: нет привязки к боту MAX`); continue; }
+    if (i > 0) await new Promise((r) => setTimeout(r, 600));
+    const res = await sendEventTo(ev, String(link.chatId), id);
+    if (res.ok) sent++;
+    else errors.push(`${fio}: ${res.response}`);
+  }
+  return { sent, errors };
+}
+
+/** Итоги по событию: кто как ответил */
+export function eventResults(eventId: number) {
+  const ev = storage.maxEvent(eventId);
+  if (!ev) return null;
+  const answers = storage.maxEventAnswers(eventId);
+  const emp = storage.employees();
+  const rows = answers.map((a: any) => ({
+    ...a,
+    fio: emp.find((e: any) => e.id === a.employeeId)?.fio ?? `#${a.employeeId}`,
+    position: emp.find((e: any) => e.id === a.employeeId)?.position ?? "",
+  })).sort((x: any, y: any) => x.fio.localeCompare(y.fio, "ru"));
+  const counts: Record<string, number> = {};
+  for (const a of answers) if (a.answer) counts[a.answer] = (counts[a.answer] ?? 0) + 1;
+  return {
+    event: { ...ev, optionList: eventOptions(ev).map((o) => o.text) },
+    rows,
+    total: rows.length,
+    answered: rows.filter((r: any) => r.answer).length,
+    waiting: rows.filter((r: any) => !r.answer).length,
+    counts,
+  };
+}
+
+/** Короткая сводка по событию для ответственных */
+export function eventDigestText(eventId: number) {
+  const res = eventResults(eventId);
+  if (!res) return "Событие не найдено.";
+  const lines = [`${res.event.title || "Событие"}: ответили ${res.answered} из ${res.total}.`];
+  for (const [opt, n] of Object.entries(res.counts)) lines.push(`• ${opt} — ${n}`);
+  const waiting = res.rows.filter((r: any) => !r.answer).map((r: any) => r.fio);
+  if (waiting.length) lines.push("", `Без ответа (${waiting.length}): ${waiting.join(", ")}`);
+  const reasons = res.rows.filter((r: any) => r.reason);
+  if (reasons.length) {
+    lines.push("", "Причины:");
+    for (const r of reasons) lines.push(`• ${r.fio} — ${r.reason}`);
+  }
+  return lines.join("\n");
+}
+
 /**
  * Опрос событий: находим тех, кто открыл бота по персональной ссылке,
  * и привязываем их профиль к карточке сотрудника.
@@ -187,6 +311,86 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
   if (callbackPayload) {
     const [action, shiftRaw] = callbackPayload.split(":");
     const shiftId = Number(shiftRaw) || 0;
+
+    // ответ на событие или опрос: payload вида ev:<id>:<номер варианта>
+    if (action === "ev") {
+      const parts = callbackPayload.split(":");
+      const evId = Number(parts[1]) || 0;
+      const optIdx = Number(parts[2]) || 0;
+      const ev = evId ? storage.maxEvent(evId) : null;
+      const opts = ev ? eventOptions(ev) : [];
+      const chosen = opts[optIdx];
+
+      if (!ev || !chosen) {
+        if (callbackId) {
+          try {
+            await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+              method: "POST",
+              body: JSON.stringify({ notification: "Событие не найдено", message: { text: "Это событие больше недоступно." } }),
+            });
+          } catch { /* не критично */ }
+        }
+        return { linked, replies };
+      }
+
+      if (ev.closed) {
+        if (callbackId) {
+          try {
+            await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+              method: "POST",
+              body: JSON.stringify({ notification: "Опрос закрыт", message: { text: "Ответы по этому событию больше не принимаются." } }),
+            });
+          } catch { /* не критично */ }
+        }
+        return { linked, replies };
+      }
+
+      const now = new Date().toISOString();
+      const prev = employeeId ? storage.maxEventAnswerFor(evId, employeeId) : null;
+      if (prev) {
+        storage.updateMaxEventAnswer(prev.id, {
+          answer: chosen.text, verdict: chosen.verdict, answeredAt: now, chatId, reason: "",
+        });
+      } else {
+        storage.createMaxEventAnswer({
+          eventId: evId, employeeId, chatId,
+          answer: chosen.text, verdict: chosen.verdict, reason: "",
+          sentAt: "", answeredAt: now,
+        });
+      }
+      replies++;
+
+      // при отрицательном ответе спрашиваем причину следующим сообщением
+      const askReason = chosen.verdict === "no" && Number(ev.askReason) === 1;
+      if (link) storage.updateNotifyLink(link.id, { awaitingEvent: askReason ? evId : 0 });
+
+      // отклик человеку сразу, рассылка ответственным — после
+      if (callbackId) {
+        try {
+          await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+            method: "POST",
+            body: JSON.stringify({
+              notification: `Ответ записан: ${chosen.text}`,
+              message: {
+                text: askReason
+                  ? `Ответ записан: «${chosen.text}». Напишите, пожалуйста, причину одним сообщением — передам руководителю.`
+                  : `Спасибо, ответ записан: «${chosen.text}».`,
+              },
+            }),
+          });
+        } catch { /* ответ на кнопку не критичен */ }
+      }
+
+      const who = employeeName(employeeId, userName);
+      const kindForNotify = chosen.verdict === "no" ? "decline" : chosen.verdict === "yes" ? "confirm" : "message";
+      void notifyResponsible(
+        `${ev.title || "Событие"} — ответ ${who}: ${chosen.text}`,
+        kindForNotify as "decline" | "confirm" | "message",
+        chatId,
+        employeeId,
+      );
+      return { linked, replies };
+    }
 
     // ответственный нажал «Ответить» под оповещением
     if (action === "reply") {
@@ -296,7 +500,29 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     return { linked, replies };
   }
 
-  // 4. причина отказа: человек уже нажал «Не смогу», ждём пояснение текстом
+  // 4. причина отказа по событию или опросу
+  if (text && link && Number(link.awaitingEvent) > 0) {
+    const evId = Number(link.awaitingEvent);
+    storage.updateNotifyLink(link.id, { awaitingEvent: 0 });
+    const ev = storage.maxEvent(evId);
+    const prev = employeeId ? storage.maxEventAnswerFor(evId, employeeId) : null;
+    if (prev) storage.updateMaxEventAnswer(prev.id, { reason: text });
+    storage.createMaxInbox({
+      employeeId, shiftId: 0, chatId, userName, text,
+      kind: "reason", createdAt: new Date().toISOString(),
+    });
+    replies++;
+    try {
+      await sendMax(chatId, "Принято, передал руководителю.");
+    } catch { /* подтверждение не критично */ }
+    void notifyResponsible(
+      `${ev?.title || "Событие"} — причина. ${employeeName(employeeId, userName)}: ${text}`,
+      "decline", chatId, employeeId,
+    );
+    return { linked, replies };
+  }
+
+  // 5. причина отказа от заезда: человек уже нажал «Не смогу», ждём пояснение текстом
   if (text && link && Number(link.awaitingShift) > 0) {
     const shiftId = Number(link.awaitingShift);
     storage.createMaxInbox({
@@ -317,7 +543,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     return { linked, replies };
   }
 
-  // 5. запрос сводки: доступен только тем, кому разрешена рассылка сводок
+  // 6. запрос сводки: доступен только тем, кому разрешена рассылка сводок
   if (/^\/?(статус|сводка|status)$/i.test(text)) {
     const allowed = String(maxSettings().reportChatIds ?? "")
       .split(",").map((x) => x.trim()).filter(Boolean);
@@ -334,7 +560,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     return { linked, replies };
   }
 
-  // 6. обычный ответ сотрудника — попадёт в переписку
+  // 7. обычный ответ сотрудника — попадёт в переписку
   if (text && type !== "bot_started") {
     storage.createMaxInbox({
       employeeId, shiftId: 0, chatId, userName, text,

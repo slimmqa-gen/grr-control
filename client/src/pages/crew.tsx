@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet, Link2, Copy, RefreshCw, Settings, MessagesSquare } from "lucide-react";
+import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet, Link2, Copy, RefreshCw, Settings, MessagesSquare, ClipboardList, ListChecks } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -151,10 +151,18 @@ export default function Crew() {
   const { toast } = useToast();
 
   const [tab, setTab] = useState<
-    "dash" | "people" | "shifts" | "absence" | "arch" | "cal" | "sms" | "chat" | "setup"
+    "dash" | "people" | "shifts" | "absence" | "arch" | "cal" | "sms" | "chat" | "events" | "setup"
   >("dash");
-  // три вкладки работают с одними данными: рассылка, переписка и настройки каналов
-  const notifyTab = tab === "sms" || tab === "chat" || tab === "setup";
+  // эти вкладки работают с одними данными: рассылка, переписка, события и настройки каналов
+  const notifyTab = tab === "sms" || tab === "chat" || tab === "events" || tab === "setup";
+
+  // ---------- События и опросы ----------
+  const [evForm, setEvForm] = useState<{
+    title: string; text: string; kind: "notice" | "confirm" | "poll";
+    options: string; eventDate: string; askReason: boolean;
+  }>({ title: "", text: "", kind: "confirm", options: "", eventDate: "", askReason: true });
+  const [evPicked, setEvPicked] = useState<number[]>([]);
+  const [evOpenId, setEvOpenId] = useState(0);
 
   // фильтры справочника сотрудников
   const [q, setQ] = useState("");
@@ -572,6 +580,74 @@ export default function Crew() {
   const [smsChannel, setSmsChannel] = useState("auto");
 
   // ---- бот MAX ----
+  const maxEvents = useQuery<any>({
+    queryKey: ["/api/max/events"],
+    enabled: notifyTab,
+    refetchInterval: tab === "events" ? 20_000 : false,
+  });
+  const eventsWaiting = (maxEvents.data?.rows ?? [])
+    .filter((e: any) => !e.closed)
+    .reduce((acc: number, e: any) => acc + Number(e.waiting ?? 0), 0);
+  const evResults = useQuery<any>({
+    queryKey: ["/api/max/events", String(evOpenId), "results"],
+    enabled: tab === "events" && evOpenId > 0,
+    refetchInterval: tab === "events" && evOpenId > 0 ? 15_000 : false,
+  });
+
+  const createEvent = useMutation({
+    mutationFn: async () => {
+      const options = evForm.kind === "poll"
+        ? evForm.options.split("\n").map((x) => x.trim()).filter(Boolean)
+        : [];
+      return apiRequest("POST", "/api/max/events", { ...evForm, options });
+    },
+    onSuccess: async (row: any) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/max/events"] });
+      setEvForm({ title: "", text: "", kind: "confirm", options: "", eventDate: "", askReason: true });
+      setEvOpenId(Number(row?.id ?? 0));
+      toast({ title: "Событие создано", description: "Теперь выберите получателей и отправьте." });
+    },
+    onError: (e: any) => toast({ title: "Не получилось", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
+  const sendEvent = useMutation({
+    mutationFn: async (v: { id: number; employeeIds: number[] }) =>
+      apiRequest("POST", `/api/max/events/${v.id}/send`, { employeeIds: v.employeeIds }),
+    onSuccess: async (out: any) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/max/events"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/max/events", String(evOpenId), "results"] });
+      toast({
+        title: `Отправлено: ${out?.sent ?? 0}`,
+        description: (out?.errors ?? []).length ? String(out.errors.slice(0, 3).join("; ")) : "Ответы появятся здесь же.",
+        variant: (out?.errors ?? []).length ? "destructive" : undefined,
+      });
+    },
+    onError: (e: any) => toast({ title: "Не получилось", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
+  const patchEvent = useMutation({
+    mutationFn: async (v: { id: number; patch: any }) => apiRequest("PATCH", `/api/max/events/${v.id}`, v.patch),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/max/events"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/max/events", String(evOpenId), "results"] });
+    },
+  });
+
+  const deleteEvent = useMutation({
+    mutationFn: async (id: number) => apiRequest("DELETE", `/api/max/events/${id}`),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/max/events"] });
+      setEvOpenId(0);
+      toast({ title: "Событие удалено" });
+    },
+  });
+
+  const eventDigest = useMutation({
+    mutationFn: async (id: number) => apiRequest("POST", `/api/max/events/${id}/digest`, {}),
+    onSuccess: (out: any) => toast({ title: `Итоги отправлены: ${out?.sent ?? 0}` }),
+    onError: (e: any) => toast({ title: "Не получилось", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
   const maxSettings = useQuery<any>({ queryKey: ["/api/max/settings"], enabled: notifyTab });
   const maxInvites = useQuery<any>({ queryKey: ["/api/max/invites"], enabled: notifyTab });
   const [maxForm, setMaxForm] = useState<any>(null);
@@ -1011,6 +1087,20 @@ export default function Crew() {
           {unreadTotal > 0 && (
             <Badge variant="destructive" className="ml-2 px-1.5 text-[10px]" data-testid="badge-unread">
               {unreadTotal}
+            </Badge>
+          )}
+        </Button>
+        <Button
+          size="sm"
+          variant={tab === "events" ? "default" : "ghost"}
+          onClick={() => setTab("events")}
+          data-testid="tab-events"
+        >
+          <ClipboardList className="mr-2 h-4 w-4" />
+          События и опросы
+          {eventsWaiting > 0 && (
+            <Badge variant="secondary" className="ml-2 px-1.5 text-[10px]" data-testid="badge-events-waiting">
+              {eventsWaiting}
             </Badge>
           )}
         </Button>
@@ -2125,6 +2215,324 @@ export default function Crew() {
         </>
       )}
 
+
+      {tab === "events" && (
+        <>
+          <Section
+            title="Новое событие или опрос"
+            description="Сообщение уходит в MAX с кнопками, ответы собираются здесь"
+          >
+            <div className="grid gap-3 lg:grid-cols-3">
+              <div className="lg:col-span-2 space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                      Название (видно в списке и в сообщении)
+                    </label>
+                    <Input
+                      value={evForm.title}
+                      onChange={(e) => setEvForm({ ...evForm, title: e.target.value })}
+                      placeholder="Например: Медосмотр в Красноярске"
+                      data-testid="input-event-title"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                      Дата события (не обязательно)
+                    </label>
+                    <Input
+                      type="date"
+                      value={evForm.eventDate}
+                      onChange={(e) => setEvForm({ ...evForm, eventDate: e.target.value })}
+                      data-testid="input-event-date"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Текст сообщения</label>
+                  <Textarea
+                    rows={3}
+                    value={evForm.text}
+                    onChange={(e) => setEvForm({ ...evForm, text: e.target.value })}
+                    placeholder="Что нужно сообщить людям"
+                    data-testid="input-event-text"
+                  />
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {([
+                    ["confirm", "Подтверждение", "Кнопки «Подтверждаю» и «Не смогу»"],
+                    ["poll", "Опрос", "Свои варианты ответа"],
+                    ["notice", "Просто сообщение", "Без кнопок"],
+                  ] as const).map(([k, label, hint]) => (
+                    <Button
+                      key={k}
+                      size="sm"
+                      variant={evForm.kind === k ? "default" : "outline"}
+                      onClick={() => setEvForm({ ...evForm, kind: k })}
+                      title={hint}
+                      data-testid={`button-event-kind-${k}`}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+
+                {evForm.kind === "poll" && (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                      Варианты ответа — каждый с новой строки, минимум два
+                    </label>
+                    <Textarea
+                      rows={4}
+                      value={evForm.options}
+                      onChange={(e) => setEvForm({ ...evForm, options: e.target.value })}
+                      placeholder={"28 сентября\n29 сентября\nНе смогу в эти дни"}
+                      data-testid="input-event-options"
+                    />
+                  </div>
+                )}
+
+                {evForm.kind !== "notice" && (
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={evForm.askReason}
+                      onCheckedChange={(v) => setEvForm({ ...evForm, askReason: !!v })}
+                      data-testid="check-event-reason"
+                    />
+                    Спрашивать причину при отрицательном ответе
+                  </label>
+                )}
+
+                <Button
+                  onClick={() => createEvent.mutate()}
+                  disabled={createEvent.isPending || !evForm.text.trim()}
+                  data-testid="button-event-create"
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Создать событие
+                </Button>
+              </div>
+
+              <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground">
+                <div className="mb-1 font-medium text-foreground">Как это работает</div>
+                Событие создаётся, затем вы выбираете получателей и отправляете. В MAX человек видит
+                текст и кнопки, нажимает — ответ сразу появляется в итогах. При отказе бот спросит
+                причину и передаст её ответственным. Ответственные получают оповещение о каждом
+                ответе и раз в день напоминание, по каким событиям ответы ещё не пришли.
+                Отправка возможна только тем, кто привязан к боту на вкладке «Настройка уведомлений».
+              </div>
+            </div>
+          </Section>
+
+          <Section
+            title="События и опросы"
+            description="Нажмите событие, чтобы открыть итоги и отправить его людям"
+          >
+            {(maxEvents.data?.rows ?? []).length === 0 ? (
+              <Empty text="Событий пока нет. Создайте первое выше." />
+            ) : (
+              <div className="space-y-2" data-testid="list-events">
+                {(maxEvents.data?.rows ?? []).map((ev: any) => (
+                  <div
+                    key={ev.id}
+                    className={`cursor-pointer rounded-md border p-3 ${evOpenId === ev.id ? "border-primary bg-muted/40" : ""}`}
+                    onClick={() => setEvOpenId(evOpenId === ev.id ? 0 : ev.id)}
+                    data-testid={`event-item-${ev.id}`}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{ev.title || ev.text.slice(0, 50)}</span>
+                      <Badge variant="secondary" className="text-[11px]">
+                        {ev.kind === "poll" ? "опрос" : ev.kind === "confirm" ? "подтверждение" : "сообщение"}
+                      </Badge>
+                      {ev.eventDate && (
+                        <Badge variant="outline" className="text-[11px]">
+                          {String(ev.eventDate).slice(8, 10)}.{String(ev.eventDate).slice(5, 7)}.{String(ev.eventDate).slice(0, 4)}
+                        </Badge>
+                      )}
+                      {ev.closed ? (
+                        <Badge variant="outline" className="text-[11px]">закрыто</Badge>
+                      ) : (
+                        <Badge variant="secondary" className="text-[11px]">
+                          ответили {ev.answered} из {ev.total}
+                        </Badge>
+                      )}
+                      {!ev.closed && ev.waiting > 0 && (
+                        <Badge variant="destructive" className="text-[11px]">без ответа {ev.waiting}</Badge>
+                      )}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">{ev.text.slice(0, 140)}</div>
+                    {Object.keys(ev.counts ?? {}).length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-2 text-xs">
+                        {Object.entries(ev.counts as Record<string, number>).map(([opt, n]) => (
+                          <span key={opt} className="rounded bg-muted px-2 py-0.5">
+                            {opt}: <b>{n}</b>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          {evOpenId > 0 && (
+            <>
+              <Section
+                title="Кому отправить"
+                description="В списке только сотрудники, привязанные к боту MAX"
+                actions={(
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm" variant="outline"
+                      onClick={() => setEvPicked((maxInvites.data?.rows ?? [])
+                        .filter((r: any) => r.linked).map((r: any) => r.employeeId))}
+                      data-testid="button-event-pick-all"
+                    >
+                      Выбрать всех
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEvPicked([])} data-testid="button-event-pick-none">
+                      Снять
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => sendEvent.mutate({ id: evOpenId, employeeIds: evPicked })}
+                      disabled={sendEvent.isPending || evPicked.length === 0}
+                      data-testid="button-event-send"
+                    >
+                      <Send className="mr-2 h-4 w-4" />
+                      Отправить выбранным ({evPicked.length})
+                    </Button>
+                  </div>
+                )}
+              >
+                {(maxInvites.data?.rows ?? []).filter((r: any) => r.linked).length === 0 ? (
+                  <Empty text="Никто не привязан к боту. Раздайте персональные ссылки на вкладке «Настройка уведомлений»." />
+                ) : (
+                  <div className="flex flex-wrap gap-2" data-testid="list-event-recipients">
+                    {(maxInvites.data?.rows ?? []).filter((r: any) => r.linked).map((r: any) => {
+                      const on = evPicked.includes(r.employeeId);
+                      return (
+                        <label
+                          key={r.employeeId}
+                          className={`flex items-center gap-2 rounded-md border px-2 py-1 text-sm ${on ? "border-primary bg-muted" : ""}`}
+                          data-testid={`event-recipient-${r.employeeId}`}
+                        >
+                          <Checkbox
+                            checked={on}
+                            onCheckedChange={(v) => setEvPicked(v
+                              ? [...evPicked, r.employeeId]
+                              : evPicked.filter((x) => x !== r.employeeId))}
+                          />
+                          {r.fio}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </Section>
+
+              <Section
+                title="Итоги"
+                description="Обновляются сами, как только человек нажимает кнопку в MAX"
+                actions={(
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm" variant="outline"
+                      onClick={() => eventDigest.mutate(evOpenId)}
+                      disabled={eventDigest.isPending}
+                      data-testid="button-event-digest"
+                    >
+                      <Send className="mr-2 h-4 w-4" />
+                      Итоги ответственным в MAX
+                    </Button>
+                    <Button
+                      size="sm" variant="outline"
+                      onClick={() => patchEvent.mutate({
+                        id: evOpenId,
+                        patch: { closed: !(evResults.data?.event?.closed) },
+                      })}
+                      data-testid="button-event-close"
+                    >
+                      {evResults.data?.event?.closed ? "Открыть заново" : "Закрыть опрос"}
+                    </Button>
+                    <Button
+                      size="sm" variant="ghost"
+                      onClick={() => deleteEvent.mutate(evOpenId)}
+                      data-testid="button-event-delete"
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Удалить
+                    </Button>
+                  </div>
+                )}
+              >
+                {evResults.isLoading ? (
+                  <Loading />
+                ) : !evResults.data ? (
+                  <Empty text="Событие ещё никому не отправлено." />
+                ) : (
+                  <>
+                    <div className="mb-3 flex flex-wrap gap-2 text-sm">
+                      <Badge variant="secondary" data-testid="badge-event-answered">
+                        ответили {evResults.data.answered} из {evResults.data.total}
+                      </Badge>
+                      {Object.entries(evResults.data.counts as Record<string, number>).map(([opt, n]) => (
+                        <Badge key={opt} variant="outline" data-testid={`badge-event-count-${opt}`}>
+                          {opt}: {n}
+                        </Badge>
+                      ))}
+                    </div>
+                    {evResults.data.rows.length === 0 ? (
+                      <Empty text="Пока никому не отправлено." />
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm" data-testid="table-event-results">
+                          <thead>
+                            <tr className="border-b text-left text-xs text-muted-foreground">
+                              <th className="py-2">Сотрудник</th>
+                              <th className="py-2">Ответ</th>
+                              <th className="py-2">Причина</th>
+                              <th className="py-2">Когда</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {evResults.data.rows.map((r: any) => (
+                              <tr key={r.id} className="border-b" data-testid={`event-result-${r.employeeId}`}>
+                                <td className="py-2">
+                                  <div className="font-medium">{r.fio}</div>
+                                  <div className="text-xs text-muted-foreground">{r.position}</div>
+                                </td>
+                                <td className="py-2">
+                                  {r.answer ? (
+                                    <Badge
+                                      variant={r.verdict === "no" ? "destructive" : r.verdict === "yes" ? "default" : "secondary"}
+                                    >
+                                      {r.answer}
+                                    </Badge>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">ждём ответа</span>
+                                  )}
+                                </td>
+                                <td className="py-2 text-xs">{r.reason || "—"}</td>
+                                <td className="py-2 text-xs text-muted-foreground">
+                                  {r.answeredAt ? new Date(r.answeredAt).toLocaleString("ru-RU") : ""}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                )}
+              </Section>
+            </>
+          )}
+        </>
+      )}
 
       {tab === "setup" && (
         <>

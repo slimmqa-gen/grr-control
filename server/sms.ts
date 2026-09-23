@@ -365,19 +365,52 @@ export function smsRecipients() {
  */
 export function calloutReminder(): { rows: Callout[]; text: string } {
   const rows = pendingCallouts().filter((r) => !r.sentAt);
-  if (rows.length === 0) return { rows, text: "" };
-  const lines = rows.map((r) =>
-    `• ${r.fio} — заезд ${ruDate(r.startDate)} (через ${r.daysLeft} дн.), ${r.object}`
-    + (r.maxLinked ? "" : r.phoneOk ? "" : " — нет номера и бота"));
-  return {
-    rows,
-    text: [
+  const blocks: string[] = [];
+
+  if (rows.length) {
+    const lines = rows.map((r) =>
+      `• ${r.fio} — заезд ${ruDate(r.startDate)} (через ${r.daysLeft} дн.), ${r.object}`
+      + (r.maxLinked ? "" : r.phoneOk ? "" : " — нет номера и бота"));
+    blocks.push([
       `Напоминание: нужно отправить вызов на вахту — ${rows.length} чел.`,
       ...lines,
       "",
       "Откройте «Сотрудники и вахты» → «Вызов на вахту» и отправьте вызовы.",
-    ].join("\n"),
-  };
+    ].join("\n"));
+  }
+
+  // Открытые события и опросы, по которым ждём ответы
+  const openEvents = eventsWaitingText();
+  if (openEvents) blocks.push(openEvents);
+
+  return { rows, text: blocks.join("\n\n") };
+}
+
+/** Что напомнить по событиям и опросам: кто ещё не ответил */
+export function eventsWaitingText(): string {
+  const events = storage.maxEvents().filter((e: any) => !e.closed);
+  if (!events.length) return "";
+  const emp = storage.employees();
+  const lines: string[] = [];
+  for (const ev of events) {
+    const answers = storage.maxEventAnswers(ev.id);
+    if (!answers.length) {
+      lines.push(`• ${ev.title || ev.text.slice(0, 40)} — ещё никому не отправлено`);
+      continue;
+    }
+    const waiting = answers.filter((a: any) => !a.answer);
+    if (!waiting.length) continue;
+    const names = waiting
+      .map((a: any) => emp.find((e: any) => e.id === a.employeeId)?.fio ?? `#${a.employeeId}`)
+      .slice(0, 12);
+    lines.push(
+      `• ${ev.title || ev.text.slice(0, 40)}${ev.eventDate ? ` (${ruDate(ev.eventDate)})` : ""}`
+      + ` — без ответа ${waiting.length} из ${answers.length}: ${names.join(", ")}`
+      + (waiting.length > names.length ? " и другие" : ""),
+    );
+  }
+  if (!lines.length) return "";
+  return [`Открытые события и опросы: ${lines.length}`, ...lines].join("\n");
 }
 
 /**
@@ -397,10 +430,10 @@ export function startSmsScheduler() {
       if (now.getHours() < s.sendHour) return;
       const { rows, text } = calloutReminder();
       saveSmsSettings({ lastRun: today });
-      if (rows.length === 0) return;
+      if (!text) return;
       const { notifyResponsible } = await import("./max");
       await notifyResponsible(text, "decline");
-      console.log(`[Напоминание] Нужно вызвать: ${rows.length} чел.`);
+      console.log(`[Напоминание] Нужно вызвать: ${rows.length} чел., напоминание отправлено.`);
     } catch (e) {
       console.log(`[Напоминание] Ошибка: ${String((e as any)?.message ?? e)}`);
     }

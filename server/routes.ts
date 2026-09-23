@@ -15,6 +15,7 @@ import {
   publicMaxSettings, saveMaxSettings, maxSettings, maxBotInfo, inviteFor, pollMaxUpdates, unlinkMax,
   maxInboxRows, replyInMax, enableMaxWebhook, disableMaxWebhook, maxWebhooks,
   webhookSecretOk, markMaxEvent, handleMaxUpdate, maxChats, maxChat, markChatSeen,
+  sendEventToEmployees, eventResults, eventDigestText, notifyResponsible,
 } from "./max";
 import { buildWorkbook, buildSummaryWorkbook, type SheetKey } from "./excel";
 import {
@@ -974,6 +975,102 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ids = Array.isArray(req.body?.chatIds) ? req.body.chatIds.map(String) : undefined;
       const out = await sendMaxDigest(ids);
       audit(req, "Сводка по подтверждениям в MAX", "max", `получателей ${out.sent}`);
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** События и опросы: список с краткими итогами */
+  app.get("/api/max/events", (_req, res) => {
+    try {
+      const rows = storage.maxEvents().map((ev: any) => {
+        const r = eventResults(ev.id);
+        return {
+          ...ev,
+          optionList: r?.event.optionList ?? [],
+          total: r?.total ?? 0, answered: r?.answered ?? 0, waiting: r?.waiting ?? 0,
+          counts: r?.counts ?? {},
+        };
+      });
+      res.json({ rows });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Создать событие или опрос */
+  app.post("/api/max/events", (req, res) => {
+    try {
+      const b = req.body ?? {};
+      const kind = ["notice", "confirm", "poll"].includes(String(b.kind)) ? String(b.kind) : "confirm";
+      const options = Array.isArray(b.options)
+        ? b.options.map((x: any) => String(x).trim()).filter(Boolean)
+        : [];
+      if (!String(b.text ?? "").trim()) return res.status(400).json({ error: "Нужен текст сообщения" });
+      if (kind === "poll" && options.length < 2) {
+        return res.status(400).json({ error: "Для опроса нужно минимум два варианта ответа" });
+      }
+      const row = storage.createMaxEvent({
+        title: String(b.title ?? "").trim(),
+        text: String(b.text).trim(),
+        kind,
+        options: JSON.stringify(options),
+        eventDate: String(b.eventDate ?? "").trim(),
+        askReason: b.askReason === false ? 0 : 1,
+        createdAt: new Date().toISOString(),
+        createdBy: (req as any).authUser?.login ?? "",
+        closed: 0,
+      });
+      audit(req, "Создано событие для MAX", "max", `${row.kind}: ${row.title || row.text.slice(0, 40)}`);
+      res.json(row);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Изменить событие: закрыть, открыть, поправить текст */
+  app.patch("/api/max/events/:id", (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const b = req.body ?? {};
+      const patch: any = {};
+      for (const k of ["title", "text", "eventDate"]) if (b[k] !== undefined) patch[k] = String(b[k]);
+      if (b.closed !== undefined) patch.closed = b.closed ? 1 : 0;
+      if (b.askReason !== undefined) patch.askReason = b.askReason ? 1 : 0;
+      if (Array.isArray(b.options)) patch.options = JSON.stringify(b.options.map((x: any) => String(x).trim()).filter(Boolean));
+      res.json(storage.updateMaxEvent(id, patch));
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Удалить событие вместе с ответами */
+  app.delete("/api/max/events/:id", (req, res) => {
+    try {
+      storage.deleteMaxEvent(Number(req.params.id));
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Итоги по событию: кто как ответил */
+  app.get("/api/max/events/:id/results", (req, res) => {
+    try {
+      const out = eventResults(Number(req.params.id));
+      if (!out) return res.status(404).json({ error: "Событие не найдено" });
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Разослать событие выбранным сотрудникам */
+  app.post("/api/max/events/:id/send", async (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.employeeIds) ? req.body.employeeIds.map(Number) : [];
+      if (!ids.length) return res.status(400).json({ error: "Не выбраны получатели" });
+      const out = await sendEventToEmployees(Number(req.params.id), ids);
+      audit(req, "Рассылка события в MAX", "max", `получателей ${out.sent}, ошибок ${out.errors.length}`);
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Отправить ответственным итоги по событию */
+  app.post("/api/max/events/:id/digest", async (req, res) => {
+    try {
+      const text = eventDigestText(Number(req.params.id));
+      const out = await notifyResponsible(text, "message");
+      audit(req, "Итоги события в MAX", "max", `получателей ${out.sent}`);
       res.json(out);
     } catch (e) { fail(res, e); }
   });

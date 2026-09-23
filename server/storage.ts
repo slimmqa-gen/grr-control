@@ -3,7 +3,7 @@ import {
   importLogs, settings, equipment, costItems, inventoryItems, DEFAULT_THRESHOLDS, POSITIONS,
   labs, analysisTypes, samples, sampleMoves, labBatches, assays, coreLogs, coreCuts,
   users, sessions, auditLog, importProfiles, synonyms, excelTemplates,
-  estimates, estimateLines, depthRates, calendarPlans, calendarStages, employeeEvents, dashboardNotes, workCalendar, smsLog, notifyLinks, maxInbox,
+  estimates, estimateLines, depthRates, calendarPlans, calendarStages, employeeEvents, dashboardNotes, workCalendar, smsLog, notifyLinks, maxInbox, maxEvents, maxEventAnswers,
 } from "@shared/schema";
 import type {
   ObjectRow, Rig, Brigade, Report, Cost, Fuel, Inventory, Employee, Shift, Position, ImportLog, Thresholds,
@@ -14,7 +14,7 @@ import type {
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
 import { DB_PATH } from "./paths";
-import { eq, asc, desc } from "drizzle-orm";
+import { eq, asc, desc, and } from "drizzle-orm";
 import { seedDatabase } from "./seed";
 
 const sqlite = new Database(DB_PATH);
@@ -185,11 +185,23 @@ CREATE TABLE IF NOT EXISTS max_inbox (
   shift_id INTEGER NOT NULL DEFAULT 0, chat_id TEXT NOT NULL DEFAULT '',
   user_name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '',
   kind TEXT NOT NULL DEFAULT 'reply', created_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS max_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'confirm',
+  options TEXT NOT NULL DEFAULT '[]', event_date TEXT NOT NULL DEFAULT '',
+  ask_reason INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '', closed INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS max_event_answers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL DEFAULT 0,
+  employee_id INTEGER NOT NULL DEFAULT 0, chat_id TEXT NOT NULL DEFAULT '',
+  answer TEXT NOT NULL DEFAULT '', verdict TEXT NOT NULL DEFAULT 'choice',
+  reason TEXT NOT NULL DEFAULT '', sent_at TEXT NOT NULL DEFAULT '',
+  answered_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS notify_links (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
   channel TEXT NOT NULL DEFAULT 'max', chat_id TEXT NOT NULL DEFAULT '',
   code TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', awaiting_shift INTEGER NOT NULL DEFAULT 0,
-  reply_to INTEGER NOT NULL DEFAULT 0,
+  reply_to INTEGER NOT NULL DEFAULT 0, awaiting_event INTEGER NOT NULL DEFAULT 0,
   linked_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS sms_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL DEFAULT 0,
@@ -244,6 +256,9 @@ try {
   }
   if (nl.length && !nl.some((c) => c.name === "reply_to")) {
     sqlite.exec("ALTER TABLE notify_links ADD COLUMN reply_to INTEGER NOT NULL DEFAULT 0");
+  }
+  if (nl.length && !nl.some((c) => c.name === "awaiting_event")) {
+    sqlite.exec("ALTER TABLE notify_links ADD COLUMN awaiting_event INTEGER NOT NULL DEFAULT 0");
   }
   const mi = sqlite.prepare("PRAGMA table_info(max_inbox)").all() as any[];
   if (mi.length && !mi.some((c) => c.name === "seen")) {
@@ -642,6 +657,27 @@ export const storage = {
   markMaxInboxSeen: (employeeId: number) =>
     db.update(maxInbox).set({ seen: 1 }).where(eq(maxInbox.employeeId, employeeId)).run(),
   createMaxInbox: (v: any) => db.insert(maxInbox).values(v).returning().get(),
+  // ---------- События и опросы в MAX ----------
+  maxEvents: () => db.select().from(maxEvents).orderBy(desc(maxEvents.id)).all(),
+  maxEvent: (id: number) => db.select().from(maxEvents).where(eq(maxEvents.id, id)).get(),
+  createMaxEvent: (v: any) => db.insert(maxEvents).values(v).returning().get(),
+  updateMaxEvent: (id: number, v: any) =>
+    db.update(maxEvents).set(v).where(eq(maxEvents.id, id)).returning().get(),
+  deleteMaxEvent: (id: number) => {
+    db.delete(maxEventAnswers).where(eq(maxEventAnswers.eventId, id)).run();
+    return db.delete(maxEvents).where(eq(maxEvents.id, id)).run();
+  },
+  maxEventAnswers: (eventId: number) =>
+    db.select().from(maxEventAnswers).where(eq(maxEventAnswers.eventId, eventId)).all(),
+  allMaxEventAnswers: () => db.select().from(maxEventAnswers).all(),
+  maxEventAnswerFor: (eventId: number, employeeId: number) =>
+    db.select().from(maxEventAnswers)
+      .where(and(eq(maxEventAnswers.eventId, eventId), eq(maxEventAnswers.employeeId, employeeId)))
+      .get(),
+  createMaxEventAnswer: (v: any) => db.insert(maxEventAnswers).values(v).returning().get(),
+  updateMaxEventAnswer: (id: number, v: any) =>
+    db.update(maxEventAnswers).set(v).where(eq(maxEventAnswers.id, id)).returning().get(),
+
   notifyLinks: () => db.select().from(notifyLinks).all(),
   createNotifyLink: (v: any) => db.insert(notifyLinks).values(v).returning().get(),
   updateNotifyLink: (id: number, v: any) =>

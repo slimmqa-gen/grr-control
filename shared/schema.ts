@@ -299,6 +299,8 @@ export const notifyLinks = sqliteTable("notify_links", {
   awaitingShift: integer("awaiting_shift").notNull().default(0),
   /** кому ответственный отвечает следующим сообщением: id сотрудника */
   replyTo: integer("reply_to").notNull().default(0),
+  /** событие, по которому ждём причину отказа */
+  awaitingEvent: integer("awaiting_event").notNull().default(0),
 });
 export type NotifyLink = typeof notifyLinks.$inferSelect;
 
@@ -316,6 +318,47 @@ export const maxInbox = sqliteTable("max_inbox", {
   createdAt: text("created_at").notNull().default(""),
 });
 export type MaxInboxRow = typeof maxInbox.$inferSelect;
+
+/**
+ * Событие или опрос для рассылки через бота MAX.
+ * kind: notice — только сообщение, confirm — кнопки «Подтверждаю»/«Не смогу»,
+ * poll — свои варианты ответа из options.
+ */
+export const maxEvents = sqliteTable("max_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  title: text("title").notNull().default(""),
+  text: text("text").notNull().default(""),
+  kind: text("kind").notNull().default("confirm"),
+  /** варианты ответа для опроса, JSON-массив строк */
+  options: text("options").notNull().default("[]"),
+  /** дата события: для напоминаний и сортировки */
+  eventDate: text("event_date").notNull().default(""),
+  /** спрашивать причину при отрицательном ответе */
+  askReason: integer("ask_reason").notNull().default(1),
+  createdAt: text("created_at").notNull().default(""),
+  createdBy: text("created_by").notNull().default(""),
+  /** событие закрыто: ответы больше не принимаются */
+  closed: integer("closed").notNull().default(0),
+});
+export type MaxEventRow = typeof maxEvents.$inferSelect;
+
+/** Ответ сотрудника на событие или опрос */
+export const maxEventAnswers = sqliteTable("max_event_answers", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  eventId: integer("event_id").notNull().default(0),
+  employeeId: integer("employee_id").notNull().default(0),
+  chatId: text("chat_id").notNull().default(""),
+  /** выбранный вариант: текст кнопки */
+  answer: text("answer").notNull().default(""),
+  /** положительный, отрицательный или обычный выбор: yes | no | choice */
+  verdict: text("verdict").notNull().default("choice"),
+  /** причина отказа, если спрашивали */
+  reason: text("reason").notNull().default(""),
+  /** отправлено сотруднику, но ответа ещё нет */
+  sentAt: text("sent_at").notNull().default(""),
+  answeredAt: text("answered_at").notNull().default(""),
+});
+export type MaxEventAnswerRow = typeof maxEventAnswers.$inferSelect;
 
 /** Настройки бота MAX (хранятся в settings под ключом max) */
 export type MaxSettings = {
