@@ -8,6 +8,7 @@
  * Бот создаётся на верифицированном профиле организации, ИП или самозанятого
  * на платформе MAX для партнёров; токен берётся в разделе «Чат-боты».
  */
+import { randomBytes } from "node:crypto";
 import { storage } from "./storage";
 import { DEFAULT_MAX_SETTINGS, type MaxSettings } from "@shared/schema";
 
@@ -32,8 +33,8 @@ export function saveMaxSettings(patch: Partial<MaxSettings>): MaxSettings {
 /** Настройки для интерфейса: токен не отдаём, только признак «задан» */
 export function publicMaxSettings() {
   const s = maxSettings();
-  const { token, ...rest } = s;
-  return { ...rest, hasToken: !!token };
+  const { token, webhookSecret, ...rest } = s;
+  return { ...rest, hasToken: !!token, hasWebhookSecret: !!webhookSecret };
 }
 
 async function maxRequest(path: string, init?: RequestInit) {
@@ -157,6 +158,112 @@ export async function sendMax(chatId: string, text: string, shiftId = 0) {
  * Опрос событий: находим тех, кто открыл бота по персональной ссылке,
  * и привязываем их профиль к карточке сотрудника.
  */
+/**
+ * Обработка одного события MAX: приходит либо из опроса, либо из webhook.
+ * Возвращает, что именно распознано, чтобы вызывающий мог посчитать итоги.
+ */
+export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies: number }> {
+  let linked = 0;
+  let replies = 0;
+
+  const type = String(u?.update_type ?? u?.type ?? "");
+  // поля у разных событий лежат по-разному, поэтому проверяем несколько мест
+  const user = u?.user ?? u?.callback?.user ?? u?.message?.sender ?? null;
+  const chatId = String(
+    user?.user_id ?? u?.user_id ?? u?.message?.recipient?.user_id ?? u?.chat_id ?? "",
+  );
+  const userName = String(user?.name ?? user?.first_name ?? "");
+  const text = String(u?.message?.body?.text ?? u?.message?.text ?? "").trim();
+  const startPayload = String(u?.payload ?? "").trim();
+  const callbackPayload = String(u?.callback?.payload ?? "").trim();
+  const callbackId = String(u?.callback?.callback_id ?? "");
+  const link = chatId
+    ? storage.notifyLinks().find((l: any) => l.channel === "max" && String(l.chatId) === chatId)
+    : null;
+  const employeeId = link?.employeeId ?? 0;
+
+  // 1. нажата кнопка подтверждения вахты
+  if (callbackPayload) {
+    const [action, shiftRaw] = callbackPayload.split(":");
+    const shiftId = Number(shiftRaw) || 0;
+    if (["confirm", "decline"].includes(action)) {
+      storage.createMaxInbox({
+        employeeId, shiftId, chatId, userName,
+        text: action === "confirm" ? "Подтверждаю заезд" : "Не смогу приехать",
+        kind: action, createdAt: new Date().toISOString(),
+      });
+      replies++;
+      if (callbackId) {
+        try {
+          await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+            method: "POST",
+            body: JSON.stringify({
+              message: {
+                text: action === "confirm"
+                  ? "Спасибо, ответ записан: вы подтвердили заезд."
+                  : "Ответ записан: вы не сможете приехать. С вами свяжется мастер.",
+              },
+            }),
+          });
+        } catch {
+          // ответ на кнопку не критичен — сам ответ уже сохранён
+        }
+      }
+      return { linked, replies };
+    }
+  }
+
+  // 2. переход по персональной ссылке или сообщение с кодом привязки
+  const code = (startPayload || text).replace(/^\/start\s*/i, "").trim();
+  const codeRow = code
+    ? storage.notifyLinks().find((l: any) => l.channel === "max" && l.code === code)
+    : null;
+  if (codeRow && chatId) {
+    storage.updateNotifyLink(codeRow.id, {
+      chatId, name: userName, linkedAt: new Date().toISOString(),
+    });
+    linked++;
+    try {
+      await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
+        method: "POST",
+        body: JSON.stringify({
+          text: "Готово: уведомления о вахте будут приходить сюда. Отвечать можно прямо в этом чате.",
+        }),
+      });
+    } catch {
+      // приветствие не критично
+    }
+    return { linked, replies };
+  }
+
+  // 3. запрос сводки: доступен только тем, кому разрешена рассылка сводок
+  if (/^\/?(статус|сводка|status)$/i.test(text)) {
+    const allowed = String(maxSettings().reportChatIds ?? "")
+      .split(",").map((x) => x.trim()).filter(Boolean);
+    if (chatId && allowed.includes(chatId)) {
+      try {
+        const { calloutDigestText } = await import("./sms");
+        await sendMax(chatId, calloutDigestText());
+      } catch (e) {
+        await sendMax(chatId, `Сводку собрать не удалось: ${String((e as Error)?.message ?? e)}`);
+      }
+    } else if (chatId) {
+      await sendMax(chatId, "Сводка доступна только руководителям. Обратитесь в отдел кадров.");
+    }
+    return { linked, replies };
+  }
+
+  // 4. обычный ответ сотрудника
+  if (text && type !== "bot_started") {
+    storage.createMaxInbox({
+      employeeId, shiftId: 0, chatId, userName, text,
+      kind: "reply", createdAt: new Date().toISOString(),
+    });
+    replies++;
+  }
+  return { linked, replies };
+}
+
 export async function pollMaxUpdates() {
   const s = maxSettings();
   if (!s.token) return { linked: 0, seen: 0 };
@@ -169,84 +276,9 @@ export async function pollMaxUpdates() {
   let replies = 0;
 
   for (const u of updates) {
-    const type = String(u?.update_type ?? u?.type ?? "");
-    // поля у разных событий лежат по-разному, поэтому проверяем несколько мест
-    const user = u?.user ?? u?.callback?.user ?? u?.message?.sender ?? null;
-    const chatId = String(
-      user?.user_id ?? u?.user_id ?? u?.message?.recipient?.user_id ?? u?.chat_id ?? "",
-    );
-    const userName = String(user?.name ?? user?.first_name ?? "");
-    const text = String(u?.message?.body?.text ?? u?.message?.text ?? "").trim();
-    const startPayload = String(u?.payload ?? "").trim();
-    const callbackPayload = String(u?.callback?.payload ?? "").trim();
-    const callbackId = String(u?.callback?.callback_id ?? "");
-    const link = chatId
-      ? storage.notifyLinks().find((l: any) => l.channel === "max" && String(l.chatId) === chatId)
-      : null;
-    const employeeId = link?.employeeId ?? 0;
-
-    // 1. нажата кнопка подтверждения вахты
-    if (callbackPayload) {
-      const [action, shiftRaw] = callbackPayload.split(":");
-      const shiftId = Number(shiftRaw) || 0;
-      if (["confirm", "decline"].includes(action)) {
-        storage.createMaxInbox({
-          employeeId, shiftId, chatId, userName,
-          text: action === "confirm" ? "Подтверждаю заезд" : "Не смогу приехать",
-          kind: action, createdAt: new Date().toISOString(),
-        });
-        replies++;
-        if (callbackId) {
-          try {
-            await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
-              method: "POST",
-              body: JSON.stringify({
-                message: {
-                  text: action === "confirm"
-                    ? "Спасибо, ответ записан: вы подтвердили заезд."
-                    : "Ответ записан: вы не сможете приехать. С вами свяжется мастер.",
-                },
-              }),
-            });
-          } catch {
-            // ответ на кнопку не критичен — сам ответ уже сохранён
-          }
-        }
-        continue;
-      }
-    }
-
-    // 2. переход по персональной ссылке или сообщение с кодом привязки
-    const code = (startPayload || text).replace(/^\/start\s*/i, "").trim();
-    const codeRow = code
-      ? storage.notifyLinks().find((l: any) => l.channel === "max" && l.code === code)
-      : null;
-    if (codeRow && chatId) {
-      storage.updateNotifyLink(codeRow.id, {
-        chatId, name: userName, linkedAt: new Date().toISOString(),
-      });
-      linked++;
-      try {
-        await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
-          method: "POST",
-          body: JSON.stringify({
-            text: "Готово: уведомления о вахте будут приходить сюда. Отвечать можно прямо в этом чате.",
-          }),
-        });
-      } catch {
-        // приветствие не критично
-      }
-      continue;
-    }
-
-    // 3. обычный ответ сотрудника
-    if (text && type !== "bot_started") {
-      storage.createMaxInbox({
-        employeeId, shiftId: 0, chatId, userName, text,
-        kind: "reply", createdAt: new Date().toISOString(),
-      });
-      replies++;
-    }
+    const out = await handleMaxUpdate(u);
+    linked += out.linked;
+    replies += out.replies;
   }
 
   if (data?.marker) saveMaxSettings({ marker: Number(data.marker) });
@@ -259,6 +291,8 @@ export function startMaxPolling() {
     try {
       const s = maxSettings();
       if (!s.enabled || !s.token) return;
+      // при активной подписке MAX не отдаёт события через опрос
+      if (s.mode === "webhook") return;
       const out = await pollMaxUpdates();
       if (out.linked || out.replies) {
         console.log(`[MAX] Привязок: ${out.linked}, ответов: ${out.replies}`);
@@ -304,4 +338,66 @@ export function confirmStateByShift() {
     if (r.shiftId && ["confirm", "decline"].includes(String(r.kind))) map[r.shiftId] = String(r.kind);
   }
   return map;
+}
+
+/** Типы событий, которые нужны программе */
+const WEBHOOK_EVENTS = ["message_created", "message_callback", "bot_started", "bot_added"];
+
+/**
+ * Включить получение событий через webhook.
+ *
+ * MAX требует адрес на https и только порт 443, сертификат доверенного центра
+ * (самоподписанный не принимается) и ответ 200 не позднее 30 секунд. Если
+ * endpoint молчит 8 часов, MAX сам снимает подписку.
+ */
+export async function enableMaxWebhook(url: string) {
+  const clean = url.trim().replace(/\/+$/, "");
+  if (!/^https:\/\//i.test(clean)) throw new Error("Адрес должен начинаться с https://");
+  if (/:\d+/.test(clean.replace(/^https:\/\//, ""))) {
+    throw new Error("MAX принимает только порт 443, поэтому порт в адресе указывать нельзя");
+  }
+  const secret = maxSettings().webhookSecret || randomBytes(16).toString("hex");
+  const out = await maxRequest("/subscriptions", {
+    method: "POST",
+    body: JSON.stringify({ url: clean, update_types: WEBHOOK_EVENTS, secret }),
+  });
+  if (out && out.success === false) throw new Error(String(out.message ?? "MAX отклонил подписку"));
+  saveMaxSettings({
+    mode: "webhook", webhookUrl: clean, webhookSecret: secret,
+    webhookAt: new Date().toISOString(),
+  });
+  return { ok: true, url: clean };
+}
+
+/** Снять подписку и вернуться к опросу */
+export async function disableMaxWebhook() {
+  const s = maxSettings();
+  if (s.webhookUrl) {
+    try {
+      await maxRequest(`/subscriptions?url=${encodeURIComponent(s.webhookUrl)}`, { method: "DELETE" });
+    } catch {
+      // даже если MAX не подтвердил снятие, программа возвращается к опросу
+    }
+  }
+  saveMaxSettings({ mode: "poll", webhookAt: "" });
+  return { ok: true };
+}
+
+/** Какие подписки MAX считает активными */
+export async function maxWebhooks() {
+  const out = await maxRequest("/subscriptions");
+  const rows = Array.isArray(out?.subscriptions) ? out.subscriptions : [];
+  return { rows, settings: publicMaxSettings() };
+}
+
+/** Проверка секрета из заголовка webhook-запроса */
+export function webhookSecretOk(header: string | undefined) {
+  const secret = maxSettings().webhookSecret;
+  if (!secret) return false;
+  return String(header ?? "") === secret;
+}
+
+/** Отметка времени последнего события — по ней видно, живёт ли подписка */
+export function markMaxEvent() {
+  saveMaxSettings({ lastEventAt: new Date().toISOString() });
 }

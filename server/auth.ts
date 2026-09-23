@@ -300,7 +300,9 @@ export function sectionOf(path: string): { section: Section; readGuard: boolean 
   return r ? { section: r.section, readGuard: r.readGuard } : null;
 }
 
-const PUBLIC = ["/api/auth/login", "/api/auth/demo-users"];
+// /api/max/webhook вызывает сам мессенджер MAX, без входа в программу:
+// подлинность проверяется секретом в заголовке X-Max-Bot-Api-Secret
+const PUBLIC = ["/api/auth/login", "/api/auth/demo-users", "/api/max/webhook"];
 
 export function installAuth(app: Express) {
   seedUsers();

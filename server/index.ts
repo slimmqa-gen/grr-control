@@ -4,7 +4,7 @@ import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "node:http";
-import { startSmsScheduler } from "./sms";
+import { startSmsScheduler, startMaxDigestScheduler } from "./sms";
 import { startMaxPolling } from "./max";
 
 const app = express();
@@ -70,6 +70,7 @@ app.use((req, res, next) => {
   startSmsScheduler();
   // привязка сотрудников к боту MAX происходит сама после перехода по ссылке
   startMaxPolling();
+  startMaxDigestScheduler();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;

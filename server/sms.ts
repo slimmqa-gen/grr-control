@@ -7,7 +7,7 @@
  */
 import { storage } from "./storage";
 import { DEFAULT_SMS_SETTINGS, type SmsSettings } from "@shared/schema";
-import { maxChatId, sendMax, maxSettings, confirmStateByShift } from "./max";
+import { maxChatId, sendMax, maxSettings, confirmStateByShift, saveMaxSettings } from "./max";
 
 const SMSC_SEND = "https://smsc.ru/sys/send.php";
 const SMSC_BALANCE = "https://smsc.ru/sys/balance.php";
@@ -148,6 +148,10 @@ export type Callout = {
   text: string;
   parts: number;
   sentAt: string;
+  /** привязан ли сотрудник к боту MAX */
+  maxLinked: boolean;
+  /** последний ответ по этой вахте: confirm, decline или пусто */
+  answer: string;
 };
 
 /** Кого нужно вызвать: заезд наступает в течение daysBefore дней */
@@ -371,4 +375,72 @@ export function startSmsScheduler() {
   };
   setTimeout(tick, 30_000);
   setInterval(tick, 15 * 60_000);
+}
+
+/**
+ * Текст сводки по подтверждениям для отправки в MAX.
+ *
+ * Показывает ближайшие заезды и три группы: кто подтвердил кнопкой,
+ * кто отказался и от кого ответа пока нет.
+ */
+export function calloutDigestText(days?: number): string {
+  const rows = pendingCallouts(days ?? Math.max(smsSettings().daysBefore, 14));
+  if (rows.length === 0) return "Заездов в ближайшие дни нет.";
+
+  const ok = rows.filter((r) => r.answer === "confirm");
+  const no = rows.filter((r) => r.answer === "decline");
+  const wait = rows.filter((r) => !r.answer);
+  const line = (r: any) => `• ${r.fio} — ${ruDate(r.startDate)}, ${r.object}`;
+
+  const parts = [
+    `Подтверждение заезда на ${ruDate(todayIso())}`,
+    `Всего заездов: ${rows.length}. Подтвердили: ${ok.length}, отказались: ${no.length}, без ответа: ${wait.length}.`,
+  ];
+  if (ok.length) parts.push("", `Подтвердили (${ok.length}):`, ...ok.map(line));
+  if (no.length) parts.push("", `Не смогут приехать (${no.length}):`, ...no.map(line));
+  if (wait.length) {
+    parts.push("", `Ответа нет (${wait.length}):`, ...wait.map((r: any) =>
+      `${line(r)}${r.sentAt ? "" : " — вызов не отправляли"}`));
+  }
+  parts.push("", "Напишите «статус», чтобы получить сводку в любой момент.");
+  return parts.join("\n");
+}
+
+/** Отправить сводку выбранным получателям в MAX */
+export async function sendMaxDigest(chatIds?: string[]) {
+  const s = maxSettings();
+  const targets = (chatIds ?? String(s.reportChatIds ?? "").split(","))
+    .map((x) => String(x).trim())
+    .filter(Boolean);
+  if (targets.length === 0) throw new Error("Не выбрано, кому присылать сводку");
+  const text = calloutDigestText();
+  const results: any[] = [];
+  for (const chatId of targets) {
+    const r = await sendMax(chatId, text);
+    results.push({ chatId, ok: r.ok, response: r.response });
+    // MAX принимает не более двух сообщений в секунду в один чат
+    await new Promise((resolve) => setTimeout(resolve, 600));
+  }
+  return { sent: results.filter((r) => r.ok).length, results, text };
+}
+
+/** Раз в час проверяем, не пора ли отправить сводку по подтверждениям */
+export function startMaxDigestScheduler() {
+  const tick = async () => {
+    try {
+      const s = maxSettings();
+      if (!s.enabled || !s.reportEnabled || !s.reportChatIds) return;
+      const now = new Date();
+      const today = todayIso();
+      if (s.reportLastDate === today) return;
+      if (now.getHours() < Number(s.reportHour ?? 18)) return;
+      await sendMaxDigest();
+      saveMaxSettings({ reportLastDate: today });
+      console.log("[MAX] Сводка по подтверждениям отправлена");
+    } catch (e) {
+      // не смогли отправить — попробуем на следующем часе
+    }
+  };
+  setTimeout(tick, 90_000);
+  setInterval(tick, 30 * 60_000);
 }

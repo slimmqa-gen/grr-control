@@ -316,9 +316,32 @@ export type MaxSettings = {
   enabled: boolean;
   token: string;
   botName: string;
+  /** метка последнего обработанного события при опросе */
   marker: number;
+  /** способ получения событий: опрос или webhook */
+  mode: "poll" | "webhook";
+  /** адрес, на который MAX присылает события */
+  webhookUrl: string;
+  /** секрет в заголовке X-Max-Bot-Api-Secret для проверки подлинности */
+  webhookSecret: string;
+  /** когда подписка была включена */
+  webhookAt: string;
+  /** когда последний раз приходило событие */
+  lastEventAt: string;
+  /** присылать ли сводку по подтверждениям в MAX */
+  reportEnabled: boolean;
+  /** кому присылать сводку: профили MAX через запятую */
+  reportChatIds: string;
+  /** час отправки сводки по местному времени */
+  reportHour: number;
+  /** дата последней отправленной сводки */
+  reportLastDate: string;
 };
-export const DEFAULT_MAX_SETTINGS: MaxSettings = { enabled: false, token: "", botName: "", marker: 0 };
+export const DEFAULT_MAX_SETTINGS: MaxSettings = {
+  enabled: false, token: "", botName: "", marker: 0,
+  mode: "poll", webhookUrl: "", webhookSecret: "", webhookAt: "", lastEventAt: "",
+  reportEnabled: false, reportChatIds: "", reportHour: 18, reportLastDate: "",
+};
 
 /** Журнал СМС-уведомлений: что, кому и когда отправлено */
 export const smsLog = sqliteTable("sms_log", {

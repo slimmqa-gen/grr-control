@@ -9,10 +9,12 @@ import { calendarYear, calendarSummary, generateYear, resetCalendarCache, workDa
 import {
   publicSmsSettings, saveSmsSettings, smsSettings, smsBalance, pendingCallouts, runCallouts, sendSms,
   sendToEmployees, smsRecipients, sendToPhones,
+  calloutDigestText, sendMaxDigest,
 } from "./sms";
 import {
   publicMaxSettings, saveMaxSettings, maxSettings, maxBotInfo, inviteFor, pollMaxUpdates, unlinkMax,
-  maxInboxRows, replyInMax,
+  maxInboxRows, replyInMax, enableMaxWebhook, disableMaxWebhook, maxWebhooks,
+  webhookSecretOk, markMaxEvent, handleMaxUpdate,
 } from "./max";
 import { buildWorkbook, buildSummaryWorkbook, type SheetKey } from "./excel";
 import {
@@ -859,6 +861,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (b.botName !== undefined) patch.botName = String(b.botName).replace(/^@/, "").trim();
       if (b.token) patch.token = String(b.token).trim();
       if (b.clearToken) patch.token = "";
+      if (b.reportEnabled !== undefined) patch.reportEnabled = !!b.reportEnabled;
+      if (b.reportChatIds !== undefined) patch.reportChatIds = String(b.reportChatIds);
+      if (b.reportHour !== undefined) {
+        patch.reportHour = Math.min(23, Math.max(0, Number(b.reportHour) || 0));
+      }
       saveMaxSettings(patch);
       audit(req, "Настройки бота MAX", "max", `бот: ${patch.botName ?? (maxSettings().botName || "не указан")}`);
       res.json(publicMaxSettings());
@@ -884,6 +891,68 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/max/poll", async (req, res) => {
     try {
       const out = await pollMaxUpdates();
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
+  /**
+   * Приёмник событий MAX. Вызывается мессенджером, поэтому без авторизации,
+   * но с проверкой секрета. Отвечаем сразу: MAX ждёт 200 не дольше 30 секунд,
+   * иначе считает доставку неудачной и через 8 часов снимает подписку.
+   */
+  app.post("/api/max/webhook", (req, res) => {
+    if (!webhookSecretOk(req.header("X-Max-Bot-Api-Secret"))) {
+      res.status(403).json({ error: "Неверный секрет" });
+      return;
+    }
+    res.json({ ok: true });
+    markMaxEvent();
+    const update = req.body;
+    void (async () => {
+      try {
+        const list = Array.isArray(update?.updates) ? update.updates : [update];
+        for (const u of list) await handleMaxUpdate(u);
+      } catch (e) {
+        console.log(`[MAX] Событие не обработано: ${String((e as Error)?.message ?? e)}`);
+      }
+    })();
+  });
+
+  /** Включить получение событий через webhook */
+  app.post("/api/max/webhook/enable", async (req, res) => {
+    try {
+      const url = String(req.body?.url ?? "").trim();
+      const out = await enableMaxWebhook(url);
+      audit(req, "Включён webhook MAX", "max", out.url);
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Вернуться к опросу */
+  app.post("/api/max/webhook/disable", async (req, res) => {
+    try {
+      const out = await disableMaxWebhook();
+      audit(req, "Отключён webhook MAX", "max", "");
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Что MAX считает активными подписками */
+  app.get("/api/max/webhook/status", async (_req, res) => {
+    try { res.json(await maxWebhooks()); } catch (e) { fail(res, e); }
+  });
+
+  /** Сводка по подтверждениям: предпросмотр текста */
+  app.get("/api/max/digest", (_req, res) => {
+    try { res.json({ text: calloutDigestText() }); } catch (e) { fail(res, e); }
+  });
+
+  /** Отправить сводку в MAX сейчас */
+  app.post("/api/max/digest/send", async (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.chatIds) ? req.body.chatIds.map(String) : undefined;
+      const out = await sendMaxDigest(ids);
+      audit(req, "Сводка по подтверждениям в MAX", "max", `получателей ${out.sent}`);
       res.json(out);
     } catch (e) { fail(res, e); }
   });

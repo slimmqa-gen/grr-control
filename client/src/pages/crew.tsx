@@ -604,6 +604,27 @@ export default function Crew() {
     },
     onError: (e: any) => toast({ title: "Проверка не прошла", description: String(e.message), variant: "destructive" }),
   });
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const enableHook = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/max/webhook/enable", { url: webhookUrl }),
+    onSuccess: () => {
+      queryClient.invalidateQueries();
+      toast({ title: "MAX будет присылать события сам", description: "Опрос больше не используется" });
+    },
+    onError: (e: any) => toast({ title: "Подписка не включилась", description: String(e.message), variant: "destructive" }),
+  });
+  const disableHook = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/max/webhook/disable", {}),
+    onSuccess: () => { queryClient.invalidateQueries(); toast({ title: "Вернулись к опросу раз в минуту" }); },
+    onError: (e: any) => toast({ title: "Не удалось снять подписку", description: String(e.message), variant: "destructive" }),
+  });
+  const sendDigest = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/max/digest/send", {}),
+    onSuccess: (d: any) => toast({ title: `Сводка отправлена: получателей ${d?.sent ?? 0}` }),
+    onError: (e: any) => toast({ title: "Сводка не ушла", description: String(e.message), variant: "destructive" }),
+  });
+  const digest = useQuery<any>({ queryKey: ["/api/max/digest"], enabled: tab === "sms" });
+
   const maxInbox = useQuery<any>({
     queryKey: ["/api/max/inbox"],
     enabled: tab === "sms",
@@ -2261,6 +2282,138 @@ export default function Crew() {
                       Сохранить
                     </Button>
                   </div>
+                </div>
+
+                <div className="mt-4 rounded-md border p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-sm font-medium">Как программа узнаёт о событиях</div>
+                    <Badge
+                      variant="outline"
+                      className={cn("text-[11px]", maxF.mode === "webhook"
+                        ? "border-emerald-500 text-emerald-600" : "border-amber-500 text-amber-600")}
+                      data-testid="badge-max-mode"
+                    >
+                      {maxF.mode === "webhook" ? "MAX присылает сам (webhook)" : "опрос раз в минуту"}
+                    </Badge>
+                    {maxF.lastEventAt && (
+                      <span className="text-xs text-muted-foreground">
+                        последнее событие {String(maxF.lastEventAt).slice(8, 10)}.
+                        {String(maxF.lastEventAt).slice(5, 7)} {String(maxF.lastEventAt).slice(11, 16)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    Webhook — способ, при котором MAX сам отправляет события на наш адрес: ответы приходят сразу,
+                    ничего не теряется. Адрес должен работать по https на порту 443 с обычным сертификатом домена.
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-end gap-2">
+                    <div className="min-w-[280px] flex-1">
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                        Адрес для событий
+                      </label>
+                      <Input
+                        value={webhookUrl || maxF.webhookUrl || "https://24pbk.ru/api/max/webhook"}
+                        onChange={(e) => setWebhookUrl(e.target.value)}
+                        data-testid="input-max-webhook"
+                      />
+                    </div>
+                    <Button
+                      onClick={() => enableHook.mutate()} disabled={enableHook.isPending}
+                      data-testid="button-max-webhook-on"
+                    >
+                      <Check className="mr-2 h-4 w-4" />
+                      Включить webhook
+                    </Button>
+                    <Button
+                      variant="outline" onClick={() => disableHook.mutate()} disabled={disableHook.isPending}
+                      data-testid="button-max-webhook-off"
+                    >
+                      Вернуть опрос
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-md border p-3">
+                  <div className="flex items-center gap-3">
+                    <Switch
+                      checked={!!maxF.reportEnabled}
+                      onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, reportEnabled: v })}
+                      data-testid="switch-max-report"
+                    />
+                    <div>
+                      <div className="text-sm font-medium">Присылать мне сводку в MAX: кто подтвердил, кто нет</div>
+                      <div className="text-xs text-muted-foreground">
+                        Раз в день в указанный час. В любой момент можно написать боту «статус» и получить сводку сразу.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    <div className="sm:col-span-2">
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                        Кому присылать — отметьте руководителей
+                      </label>
+                      <div className="flex flex-wrap gap-2" data-testid="list-max-report-targets">
+                        {(maxInvites.data?.rows ?? []).filter((r: any) => r.linked).length === 0 ? (
+                          <span className="text-xs text-muted-foreground">
+                            Сначала привяжите свой профиль по ссылке ниже
+                          </span>
+                        ) : (maxInvites.data?.rows ?? []).filter((r: any) => r.linked).map((r: any) => {
+                          const ids = String(maxF.reportChatIds ?? "").split(",").map((x: string) => x.trim()).filter(Boolean);
+                          const on = ids.includes(String(r.chatId));
+                          return (
+                            <label
+                              key={r.employeeId}
+                              className={cn("flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1 text-sm",
+                                on && "border-emerald-500 bg-emerald-50 dark:bg-emerald-950")}
+                              data-testid={`report-target-${r.employeeId}`}
+                            >
+                              <Checkbox
+                                checked={on}
+                                onCheckedChange={(v: boolean) => {
+                                  const next = v
+                                    ? [...ids, String(r.chatId)]
+                                    : ids.filter((x: string) => x !== String(r.chatId));
+                                  setMaxForm({ ...maxF, reportChatIds: next.join(",") });
+                                }}
+                              />
+                              {r.fio}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">Час отправки</label>
+                      <Input
+                        type="number" min={0} max={23} value={maxF.reportHour ?? 18}
+                        onChange={(e) => setMaxForm({ ...maxF, reportHour: Number(e.target.value) })}
+                        data-testid="input-max-report-hour"
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      size="sm" onClick={() => sendDigest.mutate()} disabled={sendDigest.isPending}
+                      data-testid="button-max-digest-send"
+                    >
+                      <Send className="mr-2 h-4 w-4" />
+                      Прислать сводку сейчас
+                    </Button>
+                    <Button
+                      size="sm" variant="outline"
+                      onClick={() => saveMax.mutate({ ...maxF, ...(maxToken ? { token: maxToken } : {}) })}
+                      data-testid="button-max-report-save"
+                    >
+                      <Check className="mr-2 h-4 w-4" />
+                      Сохранить настройки сводки
+                    </Button>
+                  </div>
+                  {digest.data?.text && (
+                    <pre
+                      className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs"
+                      data-testid="text-max-digest-preview"
+                    >{digest.data.text}</pre>
+                  )}
                 </div>
 
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
