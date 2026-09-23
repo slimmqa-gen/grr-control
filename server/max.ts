@@ -39,14 +39,28 @@ export function publicMaxSettings() {
 async function maxRequest(path: string, init?: RequestInit) {
   const s = maxSettings();
   if (!s.token) throw new Error("Не задан токен бота MAX");
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: {
-      Authorization: s.token,
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, {
+      ...init,
+      headers: {
+        Authorization: s.token,
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (e: any) {
+    // сертификат MAX выпущен удостоверяющим центром Минцифры, которого нет
+    // в наборе по умолчанию: без него соединение обрывается на проверке сертификата
+    const code = String(e?.cause?.code ?? "");
+    if (/CERT|SELF_SIGNED|ISSUER/i.test(code)) {
+      throw new Error(
+        "Нет сертификата Минцифры, поэтому соединение с MAX не устанавливается. "
+        + "Запустите на сервере: sudo bash deploy/install-russian-certs.sh",
+      );
+    }
+    throw new Error(`MAX недоступен: ${String(e?.message ?? e)}${code ? ` (${code})` : ""}`);
+  }
   const body = await res.text();
   let data: any = null;
   try { data = JSON.parse(body); } catch { data = { raw: body.slice(0, 300) }; }
