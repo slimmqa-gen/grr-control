@@ -629,6 +629,15 @@ export default function Crew() {
   });
   const digest = useQuery<any>({ queryKey: ["/api/max/digest"], enabled: notifyTab });
 
+  // кнопки «Подтверждаю» и «Не смогу» под сообщением в MAX
+  const [smsButtons, setSmsButtons] = useState(true);
+  const reminder = useQuery<any>({ queryKey: ["/api/sms/reminder"], enabled: notifyTab });
+  const sendReminder = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/sms/reminder/send", {}),
+    onSuccess: () => toast({ title: "Напоминание отправлено ответственным" }),
+    onError: (e: any) => toast({ title: "Напоминание не ушло", description: String(e.message), variant: "destructive" }),
+  });
+
   const [chatWith, setChatWith] = useState<number | null>(null);
   const maxChats = useQuery<any>({
     queryKey: ["/api/max/chats"],
@@ -712,6 +721,7 @@ export default function Crew() {
       phones: Object.fromEntries(
         Object.entries(smsPhones).filter(([id, v]) => smsPicked.includes(Number(id)) && phoneOk(String(v)))),
       savePhones: smsSavePhones,
+      buttons: smsButtons,
       extraPhones: smsExtra,
       ...(smsOwnText.trim() ? { text: smsOwnText } : {}),
     }),
@@ -2120,7 +2130,7 @@ export default function Crew() {
         <>
           <Section
             title="Вызов на вахту по СМС"
-            description="Программа сама отправляет напоминание о заезде через шлюз SMSC.ru за выбранное число дней"
+            description="Шлюз SMSC.ru для тех, у кого нет бота MAX. Сообщения сотрудникам программа сама не отправляет — только напоминает вам, кого пора вызвать."
             actions={
               <div className="flex items-center gap-2">
                 <Button
@@ -2190,7 +2200,7 @@ export default function Crew() {
                   </div>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                      За сколько дней до заезда
+                      Напоминать за сколько дней до заезда
                     </label>
                     <Input
                       type="number" min={0} max={30} value={form.daysBefore ?? 3}
@@ -2200,7 +2210,7 @@ export default function Crew() {
                   </div>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                      Во сколько отправлять, час
+                      Во сколько напоминать, час
                     </label>
                     <Input
                       type="number" min={0} max={23} value={form.sendHour ?? 9}
@@ -2581,9 +2591,31 @@ export default function Crew() {
 
       {tab === "sms" && (
         <>
+          {(reminder.data?.rows ?? []).length > 0 && (
+            <Card className="mb-4 border-amber-500/60 bg-amber-50 p-4 dark:bg-amber-950/40" data-testid="card-reminder">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium">
+                    Напоминание: нужно отправить вызов — {(reminder.data?.rows ?? []).length} чел.
+                  </div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    Программа никому не пишет сама. Проверьте список ниже и отправьте вызовы кнопкой.
+                  </div>
+                </div>
+                <Button
+                  size="sm" variant="outline" onClick={() => sendReminder.mutate()}
+                  disabled={sendReminder.isPending} data-testid="button-reminder-send"
+                >
+                  <Send className="mr-2 h-4 w-4" />
+                  Напомнить ответственным в MAX
+                </Button>
+              </div>
+            </Card>
+          )}
+
           <Section
             title="Кого вызывать"
-            description="Заезды в ближайшие дни. Программа отправляет каждому один раз — повторно кнопкой не задублируется."
+            description="Заезды в ближайшие дни. Отправляете вы сами — кнопкой; повторно одному человеку сообщение не задублируется."
             actions={
               <Button
                 size="sm" onClick={() => runSms.mutate(undefined)}
@@ -2749,6 +2781,16 @@ export default function Crew() {
                   />
                   <span className="text-xs text-muted-foreground">
                     Сохранять введённые вручную номера в карточки сотрудников
+                  </span>
+                </div>
+                <div className="flex items-end gap-2 pb-1">
+                  <Checkbox
+                    checked={smsButtons}
+                    onCheckedChange={(v: any) => setSmsButtons(!!v)}
+                    data-testid="check-sms-buttons"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Добавлять кнопки «Подтверждаю» и «Не смогу» (работают только в MAX)
                   </span>
                 </div>
               </div>

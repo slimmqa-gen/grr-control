@@ -203,7 +203,7 @@ export async function runCallouts(shiftIds?: number[], channel: Channel = "auto"
     (!shiftIds || shiftIds.includes(c.shiftId)) && !c.sentAt && (c.phoneOk || !!maxChatId(c.employeeId)));
   const results: { fio: string; phone: string; ok: boolean; response: string }[] = [];
   for (const c of list) {
-    const r = await sendOne(c.employeeId, c.phone, c.text, channel, c.shiftId);
+    const r = await sendOne(c.employeeId, c.phone, c.text, channel, c.shiftId, true);
     storage.createSmsLog({
       employeeId: c.employeeId, shiftId: c.shiftId, phone: r.via === "max" ? "MAX" : c.phone, text: c.text,
       kind: r.via === "max" ? "max-callout" : "callout",
@@ -226,14 +226,17 @@ export type Channel = "auto" | "sms" | "max";
  * Один получатель: бесплатный MAX, если сотрудник привязан, иначе СМС.
  * Канал можно задать жёстко — тогда отправка идёт только выбранным способом.
  */
-async function sendOne(employeeId: number, phone: string, text: string, channel: Channel, shiftId = 0) {
+async function sendOne(
+  employeeId: number, phone: string, text: string, channel: Channel,
+  shiftId = 0, withButtons = false,
+) {
   const linked = employeeId ? maxChatId(employeeId) : "";
   const maxOn = maxSettings().enabled && !!maxSettings().token;
   const useMax = channel === "max" || (channel === "auto" && maxOn && !!linked);
 
   if (useMax) {
     if (!linked) return { ok: false, status: "error", response: "Сотрудник не привязал бота MAX", via: "max" };
-    const r = await sendMax(linked, text, shiftId);
+    const r = await sendMax(linked, text, shiftId, withButtons);
     return { ...r, via: "max" };
   }
   const r = await sendSms(phone, text);
@@ -248,6 +251,8 @@ export async function sendToEmployees(
   /** Сохранять введённые вручную номера в карточки сотрудников */
   savePhones = false,
   channel: Channel = "auto",
+  /** добавлять кнопки «Подтверждаю» и «Не смогу» под сообщением в MAX */
+  withButtons = true,
 ) {
   const s = smsSettings();
   const today = todayIso();
@@ -286,7 +291,7 @@ export async function sendToEmployees(
       storage.updateEmployee(id, { phone: manual });
     }
 
-    const r = await sendOne(id, phone, text, channel);
+    const r = await sendOne(id, phone, text, channel, shift?.id ?? 0, withButtons);
     storage.createSmsLog({
       employeeId: id, shiftId: shift?.id ?? 0, phone: r.via === "max" ? "MAX" : phone, text,
       kind: r.via === "max" ? "max" : "manual",
@@ -355,6 +360,32 @@ export function smsRecipients() {
  * Ежедневная автоотправка. Проверка раз в 15 минут: если включено, час наступил
  * и сегодня ещё не отправляли — вызвать всех, у кого подходит заезд.
  */
+/**
+ * Кому пора отправить вызов: заезд близко, а сообщение ещё не отправляли.
+ */
+export function calloutReminder(): { rows: Callout[]; text: string } {
+  const rows = pendingCallouts().filter((r) => !r.sentAt);
+  if (rows.length === 0) return { rows, text: "" };
+  const lines = rows.map((r) =>
+    `• ${r.fio} — заезд ${ruDate(r.startDate)} (через ${r.daysLeft} дн.), ${r.object}`
+    + (r.maxLinked ? "" : r.phoneOk ? "" : " — нет номера и бота"));
+  return {
+    rows,
+    text: [
+      `Напоминание: нужно отправить вызов на вахту — ${rows.length} чел.`,
+      ...lines,
+      "",
+      "Откройте «Сотрудники и вахты» → «Вызов на вахту» и отправьте вызовы.",
+    ].join("\n"),
+  };
+}
+
+/**
+ * Раз в день напоминаем ответственным, кого пора вызывать.
+ *
+ * Сообщения сотрудникам программа сама не отправляет: решение и отправка
+ * остаются за человеком — кнопками на вкладке «Вызов на вахту».
+ */
 export function startSmsScheduler() {
   const tick = async () => {
     try {
@@ -364,13 +395,14 @@ export function startSmsScheduler() {
       const today = iso(now);
       if (s.lastRun === today) return;
       if (now.getHours() < s.sendHour) return;
-      const res = await runCallouts();
+      const { rows, text } = calloutReminder();
       saveSmsSettings({ lastRun: today });
-      if (res.sent || res.failed) {
-        console.log(`[СМС] Вызовы на вахту: отправлено ${res.sent}, с ошибкой ${res.failed}, без номера ${res.skipped}`);
-      }
+      if (rows.length === 0) return;
+      const { notifyResponsible } = await import("./max");
+      await notifyResponsible(text, "decline");
+      console.log(`[Напоминание] Нужно вызвать: ${rows.length} чел.`);
     } catch (e) {
-      console.log(`[СМС] Ошибка автоотправки: ${String((e as any)?.message ?? e)}`);
+      console.log(`[Напоминание] Ошибка: ${String((e as any)?.message ?? e)}`);
     }
   };
   setTimeout(tick, 30_000);

@@ -12,7 +12,8 @@ import { randomBytes } from "node:crypto";
 import { storage } from "./storage";
 import { DEFAULT_MAX_SETTINGS, type MaxSettings } from "@shared/schema";
 
-const API = "https://platform-api2.max.ru";
+// адрес API MAX; переменная окружения нужна только для отладки на стенде
+const API = process.env.MAX_API_URL || "https://platform-api2.max.ru";
 
 export function maxSettings(): MaxSettings {
   const raw = storage.getSetting("max");
@@ -130,16 +131,16 @@ export function maxChatId(employeeId: number): string {
  * Отправка сообщения в MAX. Если передан номер вахты, под текстом появляются
  * кнопки «Подтверждаю» и «Не смогу» — ответ придёт в программу.
  */
-export async function sendMax(chatId: string, text: string, shiftId = 0) {
+export async function sendMax(chatId: string, text: string, shiftId = 0, withButtons = false) {
   try {
     const body: any = { text };
-    if (shiftId) {
+    if (shiftId || withButtons) {
       body.attachments = [{
         type: "inline_keyboard",
         payload: {
           buttons: [[
-            { type: "callback", text: "Подтверждаю", payload: `confirm:${shiftId}` },
-            { type: "callback", text: "Не смогу", payload: `decline:${shiftId}` },
+            { type: "callback", text: "Подтверждаю", payload: `confirm:${shiftId}`, intent: "positive" },
+            { type: "callback", text: "Не смогу", payload: `decline:${shiftId}`, intent: "negative" },
           ]],
         },
       }];

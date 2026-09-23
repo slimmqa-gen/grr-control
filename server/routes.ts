@@ -9,7 +9,7 @@ import { calendarYear, calendarSummary, generateYear, resetCalendarCache, workDa
 import {
   publicSmsSettings, saveSmsSettings, smsSettings, smsBalance, pendingCallouts, runCallouts, sendSms,
   sendToEmployees, smsRecipients, sendToPhones,
-  calloutDigestText, sendMaxDigest,
+  calloutDigestText, sendMaxDigest, calloutReminder,
 } from "./sms";
 import {
   publicMaxSettings, saveMaxSettings, maxSettings, maxBotInfo, inviteFor, pollMaxUpdates, unlinkMax,
@@ -946,6 +946,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try { res.json(await maxWebhooks()); } catch (e) { fail(res, e); }
   });
 
+  /** Кому пора отправить вызов: текст напоминания и список */
+  app.get("/api/sms/reminder", (_req, res) => {
+    try { res.json(calloutReminder()); } catch (e) { fail(res, e); }
+  });
+
+  /** Прислать напоминание ответственным сейчас */
+  app.post("/api/sms/reminder/send", async (req, res) => {
+    try {
+      const { rows, text } = calloutReminder();
+      if (rows.length === 0) throw new Error("Сейчас никого вызывать не нужно");
+      const { notifyResponsible } = await import("./max");
+      const out = await notifyResponsible(text, "decline");
+      audit(req, "Напоминание о вызовах", "sms", `людей ${rows.length}`);
+      res.json({ ...out, count: rows.length });
+    } catch (e) { fail(res, e); }
+  });
+
   /** Сводка по подтверждениям: предпросмотр текста */
   app.get("/api/max/digest", (_req, res) => {
     try { res.json({ text: calloutDigestText() }); } catch (e) { fail(res, e); }
@@ -1057,8 +1074,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const channel = ["auto", "sms", "max"].includes(String(req.body?.channel))
         ? String(req.body.channel) as any : "auto";
+      // кнопки подтверждения имеют смысл только в MAX, по умолчанию включены
+      const withButtons = req.body?.buttons === undefined ? true : !!req.body.buttons;
       const out = ids.length
-        ? await sendToEmployees(ids, text, phones, savePhones, channel)
+        ? await sendToEmployees(ids, text, phones, savePhones, channel, withButtons)
         : { sent: 0, failed: 0, results: [] as any[] };
       if (extra.length) {
         const plain = await sendToPhones(extra, String(text ?? smsSettings().template));
