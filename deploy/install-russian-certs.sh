@@ -33,12 +33,26 @@ cat "$CERT_DIR/russian_trusted_root_ca.crt" "$CERT_DIR/russian_trusted_sub_ca.cr
 update-ca-certificates >/dev/null
 
 echo "3. Проверка связи с API MAX"
-code="$(curl -s -o /dev/null -w '%{http_code}' --cacert "$BUNDLE" https://platform-api2.max.ru/me -H 'Authorization: check' --max-time 20 || true)"
+check() {
+  curl -s -o /dev/null -w '%{http_code}' "$@" https://platform-api2.max.ru/me \
+    -H 'Authorization: check' --max-time 25 2>/dev/null || true
+}
+code="$(check)"
+if [ "$code" = "000" ]; then
+  # системного доверия не хватило — пробуем прямо с загруженной связкой
+  code="$(check --cacert "$BUNDLE")"
+fi
+if [ "$code" = "000" ]; then
+  code="$(check --cacert "$CERT_DIR/russian_trusted_root_ca.crt")"
+fi
+
 if [ "$code" = "401" ]; then
-  echo "   соединение установлено (401 — это ожидаемый ответ на проверочный токен)"
+  echo "   соединение установлено (401 — ожидаемый ответ на проверочный токен)"
 elif [ "$code" = "000" ]; then
-  echo "   не удалось соединиться. Проверьте доступ сервера в интернет по порту 443"
-  exit 1
+  echo "   проверка связи не прошла. Подробности ошибки:"
+  curl -sS -o /dev/null --cacert "$BUNDLE" https://platform-api2.max.ru/me \
+    -H 'Authorization: check' --max-time 25 2>&1 | sed 's/^/     /' || true
+  echo "   сертификаты всё равно установлены — программа попробует соединиться сама"
 else
   echo "   ответ сервера MAX: $code"
 fi
@@ -60,3 +74,7 @@ systemctl is-active --quiet "$SERVICE" && echo "   служба перезапу
 rm -rf "$tmp"
 echo
 echo "Готово. Откройте «Вызов на вахту» и нажмите «Проверить бота»."
+
+echo
+echo "Диагностика, если связь не установилась:"
+echo "  openssl s_client -connect platform-api2.max.ru:443 -servername platform-api2.max.ru -CAfile $BUNDLE < /dev/null 2>&1 | grep 'Verify return code'"
