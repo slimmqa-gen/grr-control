@@ -302,12 +302,53 @@ export function sectionOf(path: string): { section: Section; readGuard: boolean 
 
 // /api/max/webhook вызывает сам мессенджер MAX, без входа в программу:
 // подлинность проверяется секретом в заголовке X-Max-Bot-Api-Secret
-const PUBLIC = ["/api/auth/login", "/api/max/webhook"];
+const PUBLIC = ["/api/auth/login", "/api/health", "/api/max/webhook"];
+
+/** Поля, которые нельзя писать в журнал: пароли, токены, ключи, секреты */
+const SECRET_KEYS = /^(password|passwordhash|pass|token|apikey|api_key|secret|webhooksecret|smscpassword)$/i;
+
+/** Тело запроса для журнала: значения секретов заменяются на «скрыто» */
+export function safeForAudit(value: unknown, depth = 0): unknown {
+  if (Array.isArray(value)) return depth > 4 ? "[…]" : value.map((v) => safeForAudit(v, depth + 1));
+  if (value && typeof value === "object") {
+    if (depth > 4) return "{…}";
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SECRET_KEYS.test(k) ? (v ? "скрыто" : "") : safeForAudit(v, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Разовая чистка: убираем пароли, попавшие в журнал прежними версиями */
+function scrubAuditSecrets() {
+  try {
+    const rows = storage.auditWithSecrets?.() ?? [];
+    for (const r of rows) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(r.details); } catch { continue; }
+      const clean = JSON.stringify(safeForAudit(parsed)).slice(0, 200);
+      if (clean !== r.details) storage.updateAuditDetails(r.id, clean);
+    }
+    if (rows.length) {
+      console.log(`[Безопасность] Из журнала убраны пароли в ${rows.length} записях.`);
+    }
+  } catch {
+    // чистка журнала не должна мешать запуску
+  }
+}
 
 export function installAuth(app: Express) {
   seedUsers();
   cleanupSessions();
   warnWeakPasswords();
+  scrubAuditSecrets();
+
+  // Простая проверка живости: нужна скриптам обновления, данных не отдаёт
+  app.get("/api/health", (_req, res) => {
+    res.json({ ok: true, at: nowIso() });
+  });
 
   app.post("/api/auth/login", (req, res) => {
     const login = String(req.body?.login ?? "").trim();
@@ -451,7 +492,12 @@ function guard(req: Request, res: Response, next: NextFunction) {
   }
 
   // Журналирование значимых действий
-  if (isWrite) audit(req, `${req.method} ${req.path}`, rule?.section ?? "", JSON.stringify(req.body ?? {}).slice(0, 200));
+  if (isWrite) {
+    audit(
+      req, `${req.method} ${req.path}`, rule?.section ?? "",
+      JSON.stringify(safeForAudit(req.body ?? {})).slice(0, 200),
+    );
+  }
   if (req.method === "GET" && req.path.startsWith("/api/export/"))
     audit(req, "Выгрузка в Excel", req.path.replace("/api/export/", ""), "");
 

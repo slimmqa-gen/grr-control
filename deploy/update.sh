@@ -20,7 +20,7 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE="${SERVICE:-pbk-control}"
 PORT="${PORT:-5000}"
-HEALTH_URL="http://127.0.0.1:${PORT}/api/auth/demo-users"
+HEALTH_URL="http://127.0.0.1:${PORT}/api/health"
 BRANCH="${BRANCH:-main}"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
@@ -159,7 +159,13 @@ OK=0
 for _ in $(seq 1 20); do
   sleep 2
   systemctl is-active --quiet "$SERVICE" || continue
-  if curl -fsS -m 5 -o /dev/null "$HEALTH_URL"; then OK=1; break; fi
+  # приложение живо, если вернуло ЛЮБОЙ ответ HTTP: код 401 или 403 тоже означает,
+  # что сервер поднялся и отвечает, просто адрес закрыт авторизацией
+  CODE="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$HEALTH_URL" || echo 000)"
+  if [ "$CODE" != "000" ] && [ "$CODE" -lt 500 ]; then OK=1; break; fi
+  # запасной вариант для версий без /api/health: проверяем саму страницу
+  CODE="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/" || echo 000)"
+  if [ "$CODE" != "000" ] && [ "$CODE" -lt 500 ]; then OK=1; break; fi
 done
 
 say ""

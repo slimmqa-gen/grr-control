@@ -346,6 +346,22 @@ export const storage = {
     db.select().from(auditLog).orderBy(desc(auditLog.id)).limit(limit).all() as AuditRow[],
   addAudit: (v: any) => db.insert(auditLog).values(v).returning().get() as AuditRow,
 
+  /** Записи журнала, где сохранились пароли или ключи — для разовой чистки */
+  auditWithSecrets: () =>
+    sqlite
+      .prepare(
+        `SELECT id, details FROM audit_log
+          WHERE details LIKE '%"password"%' OR details LIKE '%"token"%'
+             OR details LIKE '%"secret"%' OR details LIKE '%"apiKey"%'
+             OR details LIKE '%"webhookSecret"%' OR details LIKE '%"smscPassword"%'`,
+      )
+      .all() as { id: number; details: string }[],
+
+  /** Заменить текст записи журнала (только для чистки секретов) */
+  updateAuditDetails: (id: number, details: string) => {
+    sqlite.prepare("UPDATE audit_log SET details = ? WHERE id = ?").run(details, id);
+  },
+
   // ---------- Профили импорта и синонимы ----------
   profiles: () => db.select().from(importProfiles).orderBy(asc(importProfiles.id)).all() as ImportProfile[],
   profileById: (id: number) =>
