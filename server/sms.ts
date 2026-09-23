@@ -62,6 +62,26 @@ export function smsParts(text: string): number {
 
 type SendResult = { ok: boolean; status: string; response: string };
 
+/** Понятные подсказки по кодам ошибок SMSC, чтобы не искать их в документации */
+const ERROR_HINTS: Record<number, string> = {
+  1: "Ошибка в параметрах запроса",
+  2: "Неверный логин или пароль, либо отправка с неразрешённого IP-адреса",
+  3: "Недостаточно средств на счёте SMSC",
+  4: "IP-адрес временно заблокирован из-за частых ошибок — повторите позже",
+  5: "Неверный формат даты",
+  6: "Сообщение запрещено по тексту или имени отправителя. Для рассылок по своей базе "
+     + "нужен заключённый договор с SMSC и зарегистрированное имя отправителя",
+  7: "Неверный формат номера телефона",
+  8: "Сообщение на этот номер доставить нельзя",
+  9: "Слишком много одинаковых запросов за минуту — повторите позже",
+};
+
+const errorText = (data: any) => {
+  const code = Number(data?.error_code ?? 0);
+  const hint = ERROR_HINTS[code];
+  return `${data?.error ?? "отказ шлюза"} (код ${code || "?"})${hint ? ` — ${hint}` : ""}`;
+};
+
 async function smscRequest(url: string, params: Record<string, string>): Promise<any> {
   const s = smsSettings();
   const query = new URLSearchParams({
@@ -94,7 +114,7 @@ export async function sendSms(phone: string, text: string): Promise<SendResult> 
       ...(s.sender ? { sender: s.sender } : {}),
       cost: "3",
     });
-    if (data?.error) return { ok: false, status: "error", response: `${data.error} (код ${data.error_code ?? "?"})` };
+    if (data?.error) return { ok: false, status: "error", response: errorText(data) };
     return {
       ok: true,
       status: "sent",
@@ -109,7 +129,7 @@ export async function smsBalance() {
   const s = smsSettings();
   if (!s.apikey && (!s.login || !s.password)) throw new Error("Не заданы логин и пароль (или API-ключ) SMSC");
   const data = await smscRequest(SMSC_BALANCE, { cur: "1" });
-  if (data?.error) throw new Error(`${data.error} (код ${data.error_code ?? "?"})`);
+  if (data?.error) throw new Error(errorText(data));
   return { balance: data?.balance ?? "", currency: data?.currency ?? "руб." };
 }
 
