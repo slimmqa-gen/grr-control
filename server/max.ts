@@ -263,6 +263,88 @@ export function eventResults(eventId: number) {
   };
 }
 
+/** Подробно по событию: кто что выбрал, кто молчит, причины */
+export function eventDetailText(eventId: number) {
+  const res = eventResults(eventId);
+  if (!res) return "Событие не найдено.";
+  const ev: any = res.event;
+  const when = ev.eventDate ? ` (${ruDate(ev.eventDate)})` : "";
+  const lines = [
+    `${ev.title || "Событие"}${when}${ev.closed ? " — закрыто" : ""}`,
+    `Ответили ${res.answered} из ${res.total}.`,
+  ];
+  const byAnswer = new Map<string, any[]>();
+  for (const r of res.rows) {
+    if (!r.answer) continue;
+    if (!byAnswer.has(r.answer)) byAnswer.set(r.answer, []);
+    byAnswer.get(r.answer)!.push(r);
+  }
+  for (const [opt, rows] of byAnswer) {
+    lines.push("", `${opt} (${rows.length}):`);
+    for (const r of rows) lines.push(`• ${r.fio}${r.reason ? ` — ${r.reason}` : ""}`);
+  }
+  const waiting = res.rows.filter((r: any) => !r.answer);
+  if (waiting.length) {
+    lines.push("", `Нет ответа (${waiting.length}):`);
+    for (const r of waiting) lines.push(`• ${r.fio}`);
+  }
+  if (!res.total) lines.push("", "Событие ещё никому не отправлено.");
+  return lines.join("\n");
+}
+
+/** Список открытых событий одной строкой на каждое */
+export function eventsOverviewText() {
+  const events = storage.maxEvents().filter((e: any) => !e.closed);
+  if (!events.length) return { text: "Открытых событий и опросов нет.", ids: [] as number[] };
+  const lines = [`Открытые события и опросы: ${events.length}`];
+  for (const ev of events) {
+    const r = eventResults(ev.id);
+    const when = ev.eventDate ? ` (${ruDate(ev.eventDate)})` : "";
+    lines.push(`• ${ev.title || ev.text.slice(0, 40)}${when} — ответили ${r?.answered ?? 0} из ${r?.total ?? 0}`);
+  }
+  lines.push("", "Нажмите событие ниже, чтобы увидеть, кто как ответил.");
+  return { text: lines.join("\n"), ids: events.map((e: any) => e.id) };
+}
+
+/** Сообщение с кнопками для руководителя */
+async function sendMaxMenu(chatId: string, text: string, buttons: { text: string; payload: string }[][]) {
+  await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
+    method: "POST",
+    body: JSON.stringify({
+      text,
+      attachments: buttons.length
+        ? [{
+          type: "inline_keyboard",
+          payload: { buttons: buttons.map((row) => row.map((b) => ({ type: "callback", ...b }))) },
+        }]
+        : [],
+    }),
+  });
+}
+
+/** Главное меню статуса: коротко по заездам и событиям, дальше — кнопками */
+async function sendStatusMenu(chatId: string) {
+  const { calloutDigestText } = await import("./sms");
+  const callout = calloutDigestText();
+  const ev = eventsOverviewText();
+  const text = [callout, "", ev.text].join("\n");
+  const rows: { text: string; payload: string }[][] = [
+    [{ text: "Заезды подробно", payload: "st:callout" }, { text: "Обновить", payload: "st:menu" }],
+  ];
+  for (const id of ev.ids.slice(0, 8)) {
+    const e = storage.maxEvent(id);
+    rows.push([{ text: String(e?.title || e?.text || `Событие ${id}`).slice(0, 40), payload: `st:ev:${id}` }]);
+  }
+  await sendMaxMenu(chatId, text, rows);
+}
+
+/** Руководитель ли это: только им доступны статус и итоги */
+function isResponsible(chatId: string) {
+  const allowed = String(maxSettings().reportChatIds ?? "")
+    .split(",").map((x) => x.trim()).filter(Boolean);
+  return !!chatId && allowed.includes(chatId);
+}
+
 /** Короткая сводка по событию для ответственных */
 export function eventDigestText(eventId: number) {
   const res = eventResults(eventId);
@@ -311,6 +393,36 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
   if (callbackPayload) {
     const [action, shiftRaw] = callbackPayload.split(":");
     const shiftId = Number(shiftRaw) || 0;
+
+    // кнопки меню статуса у руководителя
+    if (action === "st") {
+      const parts = callbackPayload.split(":");
+      if (callbackId) {
+        try {
+          await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+            method: "POST",
+            body: JSON.stringify({ notification: "Собираю данные…" }),
+          });
+        } catch { /* не критично */ }
+      }
+      if (!isResponsible(chatId)) {
+        await sendMax(chatId, "Сводка доступна только руководителям.");
+        return { linked, replies };
+      }
+      try {
+        if (parts[1] === "callout") {
+          const { calloutDigestText } = await import("./sms");
+          await sendMaxMenu(chatId, calloutDigestText(), [[{ text: "Назад к статусу", payload: "st:menu" }]]);
+        } else if (parts[1] === "ev") {
+          await sendMaxMenu(chatId, eventDetailText(Number(parts[2]) || 0), [[{ text: "Назад к статусу", payload: "st:menu" }]]);
+        } else {
+          await sendStatusMenu(chatId);
+        }
+      } catch (e) {
+        await sendMax(chatId, `Сводку собрать не удалось: ${String((e as Error)?.message ?? e)}`);
+      }
+      return { linked, replies };
+    }
 
     // ответ на событие или опрос: payload вида ev:<id>:<номер варианта>
     if (action === "ev") {
@@ -544,13 +656,25 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
   }
 
   // 6. запрос сводки: доступен только тем, кому разрешена рассылка сводок
-  if (/^\/?(статус|сводка|status)$/i.test(text)) {
-    const allowed = String(maxSettings().reportChatIds ?? "")
-      .split(",").map((x) => x.trim()).filter(Boolean);
-    if (chatId && allowed.includes(chatId)) {
+  const cmd = text.trim().toLowerCase().replace(/^\//, "");
+  const isStatus = /^(статус|сводка|status|меню|menu)$/.test(cmd);
+  const isCallout = /^(заезд|заезды|вахта|вахты)$/.test(cmd);
+  const isEvents = /^(события|опросы|событие|опрос)$/.test(cmd);
+  if (isStatus || isCallout || isEvents) {
+    if (isResponsible(chatId)) {
       try {
-        const { calloutDigestText } = await import("./sms");
-        await sendMax(chatId, calloutDigestText());
+        if (isCallout) {
+          const { calloutDigestText } = await import("./sms");
+          await sendMaxMenu(chatId, calloutDigestText(), [[{ text: "Назад к статусу", payload: "st:menu" }]]);
+        } else if (isEvents) {
+          const ev = eventsOverviewText();
+          await sendMaxMenu(chatId, ev.text, ev.ids.slice(0, 8).map((id) => {
+            const e = storage.maxEvent(id);
+            return [{ text: String(e?.title || e?.text || `Событие ${id}`).slice(0, 40), payload: `st:ev:${id}` }];
+          }));
+        } else {
+          await sendStatusMenu(chatId);
+        }
       } catch (e) {
         await sendMax(chatId, `Сводку собрать не удалось: ${String((e as Error)?.message ?? e)}`);
       }
