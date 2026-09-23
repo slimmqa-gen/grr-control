@@ -193,6 +193,12 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
         kind: action, createdAt: new Date().toISOString(),
       });
       replies++;
+      if (action === "confirm") {
+        await notifyResponsible(
+          `Заезд подтверждён: ${employeeName(employeeId, userName)}.`,
+          "confirm",
+        );
+      }
       // при отказе просим причину следующим сообщением
       if (action === "decline") {
         if (link) storage.updateNotifyLink(link.id, { awaitingShift: shiftId });
@@ -285,7 +291,11 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
       kind: "reply", createdAt: new Date().toISOString(),
     });
     replies++;
-    await notifyResponsible(`Сообщение от ${employeeName(employeeId, userName)}: ${text}`, chatId);
+    await notifyResponsible(
+      `Новое сообщение от ${employeeName(employeeId, userName)}: ${text}`,
+      "message",
+      chatId,
+    );
   }
   return { linked, replies };
 }
@@ -441,9 +451,16 @@ function employeeName(employeeId: number, fallback: string) {
  * `exceptChatId` не даёт отправить человеку его же сообщение, когда он сам
  * отмечен ответственным.
  */
-export async function notifyResponsible(text: string, exceptChatId = "") {
+export async function notifyResponsible(
+  text: string,
+  kind: "decline" | "message" | "confirm" = "decline",
+  exceptChatId = "",
+) {
   const s = maxSettings();
-  if (!s.notifyDecline) return { sent: 0 };
+  const allow = kind === "message" ? s.notifyMessage
+    : kind === "confirm" ? s.notifyConfirm
+    : s.notifyDecline;
+  if (!allow) return { sent: 0 };
   const targets = String(s.reportChatIds ?? "").split(",").map((x) => x.trim())
     .filter((x) => x && x !== exceptChatId);
   let sent = 0;

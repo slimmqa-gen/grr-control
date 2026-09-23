@@ -864,6 +864,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (b.reportEnabled !== undefined) patch.reportEnabled = !!b.reportEnabled;
       if (b.reportChatIds !== undefined) patch.reportChatIds = String(b.reportChatIds);
       if (b.notifyDecline !== undefined) patch.notifyDecline = !!b.notifyDecline;
+      if (b.notifyMessage !== undefined) patch.notifyMessage = !!b.notifyMessage;
+      if (b.notifyConfirm !== undefined) patch.notifyConfirm = !!b.notifyConfirm;
       if (b.duplicateSms !== undefined) patch.duplicateSms = !!b.duplicateSms;
       if (b.reportHour !== undefined) {
         patch.reportHour = Math.min(23, Math.max(0, Number(b.reportHour) || 0));

@@ -340,8 +340,12 @@ export type MaxSettings = {
   reportHour: number;
   /** дата последней отправленной сводки */
   reportLastDate: string;
-  /** сообщать ответственным об отказах сразу */
+  /** сообщать ответственным об отказах и причинах */
   notifyDecline: boolean;
+  /** сообщать о каждом новом сообщении от сотрудника */
+  notifyMessage: boolean;
+  /** сообщать о подтверждениях заезда */
+  notifyConfirm: boolean;
   /** дублировать такие оповещения СМС на телефоны ответственных */
   duplicateSms: boolean;
 };
@@ -349,7 +353,7 @@ export const DEFAULT_MAX_SETTINGS: MaxSettings = {
   enabled: false, token: "", botName: "", marker: 0,
   mode: "poll", webhookUrl: "", webhookSecret: "", webhookAt: "", lastEventAt: "",
   reportEnabled: false, reportChatIds: "", reportHour: 18, reportLastDate: "",
-  notifyDecline: true, duplicateSms: false,
+  notifyDecline: true, notifyMessage: true, notifyConfirm: false, duplicateSms: false,
 };
 
 /** Журнал СМС-уведомлений: что, кому и когда отправлено */

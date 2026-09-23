@@ -2444,7 +2444,23 @@ export default function Crew() {
                         onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, notifyDecline: v })}
                         data-testid="check-notify-decline"
                       />
-                      Сообщать сразу об отказах, причинах и сообщениях сотрудников
+                      Сообщать об отказах от заезда и причинах
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={!!maxF.notifyMessage}
+                        onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, notifyMessage: v })}
+                        data-testid="check-notify-message"
+                      />
+                      Сообщать о каждом новом сообщении от сотрудника
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={!!maxF.notifyConfirm}
+                        onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, notifyConfirm: v })}
+                        data-testid="check-notify-confirm"
+                      />
+                      Сообщать о подтверждениях заезда
                     </label>
                     <label className="flex items-center gap-2 text-sm">
                       <Checkbox
