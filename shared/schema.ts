@@ -261,6 +261,31 @@ export const shifts = sqliteTable("shifts", {
   importId: integer("import_id").notNull().default(0),
 });
 
+/**
+ * Производственный календарь для офиса и пробоподготовки. Вахтовики работают
+ * по графику заездов, поэтому календарь на них не влияет. Хранятся все дни года:
+ * так любой день можно поправить вручную (перенос или работа по необходимости).
+ */
+export const workCalendar = sqliteTable("work_calendar", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  date: text("date").notNull(),
+  kind: text("kind").notNull().default("work"),
+  note: text("note").notNull().default(""),
+});
+export const WORK_DAY_KINDS = ["work", "weekend", "holiday", "short"] as const;
+export const WORK_DAY_KIND_TEXT: Record<string, string> = {
+  work: "Рабочий",
+  weekend: "Выходной",
+  holiday: "Праздник",
+  short: "Сокращённый",
+};
+export const insertWorkCalendarSchema = createInsertSchema(workCalendar).omit({ id: true }).extend({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Дата в формате ГГГГ-ММ-ДД"),
+  kind: z.enum(WORK_DAY_KINDS).default("work"),
+  note: z.string().default(""),
+});
+export type WorkCalendarDay = typeof workCalendar.$inferSelect;
+
 /** Журнал импортов */
 export const importLogs = sqliteTable("import_logs", {
   id: integer("id").primaryKey({ autoIncrement: true }),

@@ -7,9 +7,10 @@
  */
 import { storage } from "./storage";
 import { OPEN_ENDED_DATE } from "@shared/schema";
+import { workDayMap } from "./calendar";
 
 export const HR_STATES = [
-  "sick", "vacation", "study", "trip", "onshift", "between", "work", "unassigned",
+  "sick", "vacation", "study", "trip", "onshift", "between", "work", "dayoff", "unassigned",
 ] as const;
 export type HrState = (typeof HR_STATES)[number];
 
@@ -21,6 +22,7 @@ export const HR_STATE_LABELS: Record<HrState, string> = {
   onshift: "На вахте",
   between: "На межвахте",
   work: "Работа",
+  dayoff: "Выходной",
   unassigned: "Без статуса",
 };
 
@@ -58,6 +60,7 @@ function stateOfDay(
   empShifts: any[],
   empEvents: any[],
   firstShiftStart: string,
+  calendar: Map<string, string>,
 ): HrState {
   const covering = empEvents.filter((ev) => ev.startDate <= day && ev.endDate >= day);
   if (covering.length) {
@@ -67,7 +70,12 @@ function stateOfDay(
   }
   if (empShifts.some((s) => s.startDate <= day && s.endDate >= day)) return "onshift";
   if (emp.workStatus === "between") return firstShiftStart && day >= firstShiftStart ? "between" : "unassigned";
-  if (emp.workStatus === "office" || emp.workStatus === "pp") return "work";
+  if (emp.workStatus === "office" || emp.workStatus === "pp") {
+    // офис и пробоподготовка работают по производственному календарю;
+    // работа в выходной отмечается отдельной записью вида «Офис» или «ПП»
+    const kind = calendar.get(day) ?? "work";
+    return kind === "weekend" || kind === "holiday" ? "dayoff" : "work";
+  }
   return "unassigned";
 }
 
@@ -86,6 +94,7 @@ export function employeeTimesheet(employeeId: number, year: number) {
       endDate: ev.endDate === OPEN_ENDED_DATE ? today : ev.endDate,
     }));
   const firstShiftStart = empShifts.map((s: any) => s.startDate).sort()[0] ?? "";
+  const calendar = workDayMap([year]);
 
   const months = MONTHS.map((label, i) => {
     const counters = emptyCounters();
@@ -95,7 +104,7 @@ export function employeeTimesheet(employeeId: number, year: number) {
     for (let d = 1; d <= daysInMonth; d++) {
       const day = `${year}-${String(monthNum).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
       if (day > today) break; // будущие дни не считаем — это факт, а не план
-      counters[stateOfDay(day, emp, empShifts, empEvents, firstShiftStart)]++;
+      counters[stateOfDay(day, emp, empShifts, empEvents, firstShiftStart, calendar)]++;
       counted++;
     }
     return { month: `${year}-${String(monthNum).padStart(2, "0")}`, label, days: counted, ...counters };

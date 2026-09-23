@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope } from "lucide-react";
+import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -24,7 +24,24 @@ const NO_OBJECT = "0";
 /** Подписи видов отсутствий: используются в дашборде и списках */
 const ABSENCE_KIND_TEXT: Record<string, string> = {
   vacation: "Отпуск", sick: "Больничный", trip: "Командировка", study: "Обучение", between: "На межвахте",
+  office: "Работа в офисе", pp: "Работа на ПП",
 };
+
+/** Типы дней производственного календаря: подпись и цвет плитки */
+const DAY_KIND_TEXT: Record<string, string> = {
+  work: "Рабочий", weekend: "Выходной", holiday: "Праздник", short: "Сокращённый",
+};
+const DAY_KIND_CLASS: Record<string, string> = {
+  work: "bg-background hover:bg-muted",
+  weekend: "bg-muted text-muted-foreground",
+  holiday: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
+  short: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+};
+const DAY_KIND_NEXT: Record<string, string> = { work: "weekend", weekend: "holiday", holiday: "short", short: "work" };
+const MONTH_NAMES = [
+  "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+  "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+];
 
 /**
  * Строка дашборда: нажатие открывает карточку сотрудника, значок графика —
@@ -63,9 +80,10 @@ function DashRow({
 const OTHER_PLACE = "other";
 
 /** Состояния кадровой аналитики: один день относится только к одному состоянию */
-const HR_STATE_ORDER = ["work", "onshift", "between", "trip", "vacation", "sick", "study", "unassigned"] as const;
+const HR_STATE_ORDER = ["work", "dayoff", "onshift", "between", "trip", "vacation", "sick", "study", "unassigned"] as const;
 const HR_STATE_LABELS: Record<string, string> = {
   work: "Работа",
+  dayoff: "Выходной",
   onshift: "На вахте",
   between: "Межвахта",
   trip: "Командировка",
@@ -130,7 +148,7 @@ export default function Crew() {
   const empEventsQ = useList<any>("/api/employee-events");
   const { toast } = useToast();
 
-  const [tab, setTab] = useState<"dash" | "people" | "shifts" | "absence">("dash");
+  const [tab, setTab] = useState<"dash" | "people" | "shifts" | "absence" | "arch" | "cal">("dash");
 
   // фильтры справочника сотрудников
   const [q, setQ] = useState("");
@@ -476,6 +494,51 @@ export default function Crew() {
     enabled: showSummary,
   });
 
+  // ---- Архив вахт: полная история заездов и выездов ----
+  const thisYear = new Date().getFullYear();
+  const [archFrom, setArchFrom] = useState(`${thisYear}-01-01`);
+  const [archTo, setArchTo] = useState(`${thisYear}-12-31`);
+  const [archObject, setArchObject] = useState("all");
+  const [archQ, setArchQ] = useState("");
+  const [archAll, setArchAll] = useState(false);
+  const archive = useQuery<any>({
+    queryKey: [`/api/hr/shift-archive?from=${archFrom}&to=${archTo}`],
+    enabled: tab === "arch",
+  });
+  const [sliceDate, setSliceDate] = useState(todayIso());
+  const slice = useQuery<any>({
+    queryKey: [`/api/hr/on-date/${sliceDate}`],
+    enabled: tab === "arch" && /^\d{4}-\d{2}-\d{2}$/.test(sliceDate),
+  });
+
+  const archRows = useMemo(() => {
+    const rows: any[] = archive.data?.rows ?? [];
+    const needle = archQ.trim().toLowerCase();
+    return rows.filter((r) =>
+      (archObject === "all" || String(r.objectId) === archObject)
+      && (!needle || String(r.fio).toLowerCase().includes(needle)));
+  }, [archive.data, archObject, archQ]);
+
+  // ---- Производственный календарь ----
+  const [calYear, setCalYear] = useState(String(thisYear));
+  const calendar = useQuery<any>({
+    queryKey: [`/api/work-calendar/${calYear}`],
+    enabled: tab === "cal",
+  });
+  const setDayKind = useMutation({
+    mutationFn: (v: { id: number; kind: string }) =>
+      apiRequest("PATCH", `/api/work-calendar/day/${v.id}`, { kind: v.kind }),
+    onSuccess: () => queryClient.invalidateQueries(),
+    onError: (e: any) => toast({ title: "Не удалось изменить день", description: String(e.message), variant: "destructive" }),
+  });
+  const regenYear = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/work-calendar/${calYear}/generate`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries();
+      toast({ title: `Календарь ${calYear} года создан по ТК РФ`, description: "Ручные правки этого года сброшены." });
+    },
+  });
+
   const yearOptions = (() => {
     const y = new Date().getFullYear();
     return [String(y), String(y - 1), String(y - 2)];
@@ -682,6 +745,24 @@ export default function Crew() {
               {nf(absCounters.endingSoon)}
             </Badge>
           )}
+        </Button>
+        <Button
+          size="sm"
+          variant={tab === "arch" ? "default" : "ghost"}
+          onClick={() => setTab("arch")}
+          data-testid="tab-arch"
+        >
+          <History className="mr-2 h-4 w-4" />
+          Архив вахт
+        </Button>
+        <Button
+          size="sm"
+          variant={tab === "cal" ? "default" : "ghost"}
+          onClick={() => setTab("cal")}
+          data-testid="tab-cal"
+        >
+          <CalendarDays className="mr-2 h-4 w-4" />
+          Календарь
         </Button>
       </div>
 
@@ -1437,6 +1518,354 @@ export default function Crew() {
         </>
       )}
 
+
+      {tab === "arch" && (
+        <>
+          <Section
+            title="Архив вахт"
+            description="Все заезды и выезды за выбранный период. Нажмите строку — откроется карточка сотрудника."
+            actions={
+              <ExportButton
+                onClick={() => downloadFile(`/api/export/shift-archive/xlsx?from=${archFrom}&to=${archTo}`, `Архив вахт ${archFrom} — ${archTo}.xlsx`)}
+                label="Выгрузить в Excel"
+              />
+            }
+          >
+            <div className="mb-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Период с</label>
+                <Input
+                  type="date" value={archFrom} onChange={(e) => setArchFrom(e.target.value)}
+                  data-testid="input-arch-from"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">по</label>
+                <Input
+                  type="date" value={archTo} onChange={(e) => setArchTo(e.target.value)}
+                  data-testid="input-arch-to"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Участок</label>
+                <Select value={archObject} onValueChange={setArchObject}>
+                  <SelectTrigger data-testid="filter-arch-object"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Все участки</SelectItem>
+                    {objects.map((o: any) => (
+                      <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Сотрудник</label>
+                <div className="relative">
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    className="pl-8" placeholder="Фамилия" value={archQ}
+                    onChange={(e) => setArchQ(e.target.value)} data-testid="input-arch-search"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <Kpi testId="arch-kpi-shifts" label="Вахт в периоде" value={nf(archRows.length)} />
+              <Kpi
+                testId="arch-kpi-people" label="Человек"
+                value={nf(new Set(archRows.map((r: any) => r.employeeId)).size)}
+              />
+              <Kpi
+                testId="arch-kpi-mandays" label="Человеко-дней"
+                value={nf(archRows.reduce((sum: number, r: any) => sum + r.days, 0))}
+              />
+              <Kpi
+                testId="arch-kpi-avg" label="Средняя вахта, дн."
+                value={archRows.length
+                  ? nf(Math.round(archRows.reduce((sum: number, r: any) => sum + r.days, 0) / archRows.length))
+                  : "0"}
+              />
+            </div>
+
+            {archive.isLoading ? <Loading rows={3} /> : archRows.length === 0 ? (
+              <Empty text="За этот период вахт нет. Измените даты или участок." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" data-testid="table-arch">
+                  <thead>
+                    <tr className="border-b text-left text-xs text-muted-foreground">
+                      <th className="py-2 pr-3 font-medium">Сотрудник</th>
+                      <th className="py-2 pr-3 font-medium">Участок</th>
+                      <th className="py-2 pr-3 font-medium">Заезд</th>
+                      <th className="py-2 pr-3 font-medium">Выезд</th>
+                      <th className="py-2 pr-3 text-right font-medium">Дней</th>
+                      <th className="py-2 pr-3 font-medium">Цикл</th>
+                      <th className="py-2 pr-3 font-medium">Состояние</th>
+                      <th className="py-2 pr-0" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(archAll ? archRows : archRows.slice(0, 100)).map((r: any) => {
+                      const today = todayIso();
+                      const stateText = r.endDate < today ? "завершена" : r.startDate > today ? "запланирована" : "идёт";
+                      return (
+                        <tr
+                          key={r.shiftId} className="cursor-pointer border-b hover:bg-muted/50"
+                          data-testid={`arch-row-${r.shiftId}`}
+                          onClick={() => openEmployeeCard(r.employeeId)}
+                        >
+                          <td className="py-2 pr-3">
+                            <div className="font-medium">{r.fio}</div>
+                            <div className="text-xs text-muted-foreground">{r.position}</div>
+                          </td>
+                          <td className="py-2 pr-3">{r.object}</td>
+                          <td className="num py-2 pr-3">{ruDate(r.startDate)}</td>
+                          <td className="num py-2 pr-3">{ruDate(r.endDate)}</td>
+                          <td className="num py-2 pr-3 text-right">{nf(r.days)}</td>
+                          <td className="py-2 pr-3 text-muted-foreground">{r.cycleType}</td>
+                          <td className="py-2 pr-3">
+                            <Badge variant="outline" className="text-[11px]">{stateText}</Badge>
+                          </td>
+                          <td className="py-2 pr-0 text-right">
+                            <Button
+                              size="icon" variant="ghost" className="h-7 w-7"
+                              aria-label={`Аналитика по ${r.fio}`}
+                              data-testid={`arch-analytics-${r.shiftId}`}
+                              onClick={(e) => { e.stopPropagation(); openAnalytics(r.employeeId); }}
+                            >
+                              <BarChart3 className="h-4 w-4" />
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {archRows.length > 100 && (
+                  <div className="mt-3 text-center">
+                    <Button
+                      size="sm" variant="outline" onClick={() => setArchAll(!archAll)}
+                      data-testid="arch-toggle-all"
+                    >
+                      {archAll ? "Свернуть список" : `Показать все (${nf(archRows.length)})`}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </Section>
+
+          <Section title="Итоги по участкам" description="Сколько вахт, людей и человеко-дней прошло через каждый участок за период">
+            {(archive.data?.byObject ?? []).length === 0 ? (
+              <Empty text="Нет данных за период." />
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {(archive.data?.byObject ?? []).map((o: any) => (
+                  <button
+                    key={o.objectId} type="button"
+                    className="rounded-md border p-3 text-left hover:bg-muted/50"
+                    data-testid={`arch-object-${o.objectId}`}
+                    onClick={() => setArchObject(String(o.objectId))}
+                  >
+                    <div className="font-medium">{o.name}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Вахт {nf(o.shifts)} · человек {nf(o.people)} · человеко-дней {nf(o.manDays)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          <Section
+            title="Срез на дату"
+            description="Выберите любой день — программа покажет, кто был на вахте, а кто не выезжал и по какой причине"
+          >
+            <div className="mb-3 flex flex-wrap items-end gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Дата</label>
+                <Input
+                  type="date" value={sliceDate} onChange={(e) => setSliceDate(e.target.value)}
+                  className="w-44" data-testid="input-slice-date"
+                />
+              </div>
+              <Button size="sm" variant="outline" onClick={() => setSliceDate(todayIso())} data-testid="slice-today">
+                Сегодня
+              </Button>
+              {slice.data && (
+                <Badge variant="outline" className="mb-1">
+                  {DAY_KIND_TEXT[slice.data.dayKind] ?? slice.data.dayKind} день по календарю
+                </Badge>
+              )}
+            </div>
+
+            {slice.isLoading ? <Loading rows={3} /> : !slice.data ? (
+              <Empty text="Выберите дату." />
+            ) : (
+              <>
+                <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+                  <Kpi testId="slice-kpi-total" label="Всего сотрудников" value={nf(slice.data.counters.total)} />
+                  <Kpi testId="slice-kpi-onshift" label="Были на вахте" value={nf(slice.data.counters.onshift)} />
+                  <Kpi testId="slice-kpi-between" label="На межвахте" value={nf(slice.data.counters.between)} />
+                  <Kpi testId="slice-kpi-absent" label="Отсутствовали" value={nf(slice.data.counters.absent)} />
+                  <Kpi testId="slice-kpi-work" label="Работали в офисе или на ПП" value={nf(slice.data.counters.work)} />
+                  <Kpi testId="slice-kpi-dayoff" label="Выходной у офиса" value={nf(slice.data.counters.dayoff)} />
+                </div>
+
+                {slice.data.byObject.length > 0 && (
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    {slice.data.byObject.map((o: any) => (
+                      <Badge key={o.objectId} variant="secondary" className="text-xs">
+                        {o.name}: {nf(o.people)} чел.
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div>
+                    <div className="mb-2 text-sm font-medium">Были на вахте</div>
+                    <div className="space-y-2" data-testid="slice-list-onshift">
+                      {slice.data.rows.filter((r: any) => r.state === "onshift").length === 0 ? (
+                        <Empty text="В этот день на вахте никого не было." />
+                      ) : slice.data.rows.filter((r: any) => r.state === "onshift").map((r: any) => (
+                        <DashRow
+                          key={r.employeeId} testId={`slice-row-on-${r.employeeId}`}
+                          fio={r.fio}
+                          sub={`${r.object} · ${ruDate(r.shiftStart)} — ${ruDate(r.shiftEnd)}`}
+                          badge="на вахте" level="ok"
+                          onOpen={() => openEmployeeCard(r.employeeId)}
+                          onAnalytics={() => openAnalytics(r.employeeId)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-2 text-sm font-medium">Не были на вахте</div>
+                    <div className="space-y-2" data-testid="slice-list-off">
+                      {slice.data.rows.filter((r: any) => r.state !== "onshift").length === 0 ? (
+                        <Empty text="В этот день на вахте были все." />
+                      ) : slice.data.rows.filter((r: any) => r.state !== "onshift").map((r: any) => (
+                        <DashRow
+                          key={r.employeeId} testId={`slice-row-off-${r.employeeId}`}
+                          fio={r.fio}
+                          sub={r.eventKind
+                            ? `${ABSENCE_KIND_TEXT[r.eventKind] ?? r.eventKind} · по ${ruDate(r.eventEnd)}`
+                            : r.lastShiftEnd
+                              ? `Последний выезд ${ruDate(r.lastShiftEnd)}`
+                              : r.position}
+                          badge={HR_STATE_LABELS[r.state] ?? r.state}
+                          level={["sick", "unassigned"].includes(r.state) ? "warn" : "ok"}
+                          onOpen={() => openEmployeeCard(r.employeeId)}
+                          onAnalytics={() => openAnalytics(r.employeeId)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </Section>
+        </>
+      )}
+
+      {tab === "cal" && (
+        <>
+          <Section
+            title={`Производственный календарь ${calYear} года`}
+            description="Календарь действует для офиса и пробоподготовки. Вахтовики работают по графику заездов, на них он не влияет."
+            actions={
+              <div className="flex items-center gap-2">
+                <Select value={calYear} onValueChange={setCalYear}>
+                  <SelectTrigger className="w-28" data-testid="filter-cal-year"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {["2026", "2027", "2028", "2029", "2030"].map((y) => (
+                      <SelectItem key={y} value={y}>{y}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm" variant="outline" data-testid="button-cal-regen"
+                  disabled={regenYear.isPending}
+                  onClick={() => {
+                    if (window.confirm(`Пересобрать календарь ${calYear} года по ТК РФ? Ручные правки этого года будут сброшены.`)) {
+                      regenYear.mutate();
+                    }
+                  }}
+                >
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  Пересобрать по ТК РФ
+                </Button>
+              </div>
+            }
+          >
+            <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>Нажмите день, чтобы сменить тип:</span>
+              {["work", "weekend", "holiday", "short"].map((k) => (
+                <span key={k} className={cn("rounded border px-2 py-1", DAY_KIND_CLASS[k])}>{DAY_KIND_TEXT[k]}</span>
+              ))}
+              <span>· Работа в выходной по необходимости отмечается записью «Работа в офисе» на вкладке «Отсутствия»</span>
+            </div>
+
+            {calendar.isLoading ? <Loading rows={6} /> : !calendar.data ? (
+              <Empty text="Календарь не загрузился. Обновите страницу." />
+            ) : (
+              <>
+                <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <Kpi testId="cal-kpi-work" label="Рабочих дней в году" value={nf(calendar.data.total.work)} />
+                  <Kpi testId="cal-kpi-weekend" label="Выходных" value={nf(calendar.data.total.weekend)} />
+                  <Kpi testId="cal-kpi-holiday" label="Праздничных" value={nf(calendar.data.total.holiday)} />
+                  <Kpi testId="cal-kpi-days" label="Дней в году" value={nf(calendar.data.total.days)} />
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {calendar.data.months.map((m: any, i: number) => {
+                    const days = (calendar.data.days ?? []).filter((d: any) => d.date.startsWith(m.month));
+                    const first = days[0] ? new Date(days[0].date + "T00:00:00Z").getUTCDay() : 1;
+                    const pad = (first + 6) % 7; // неделя начинается с понедельника
+                    return (
+                      <div key={m.month} className="rounded-md border p-3" data-testid={`cal-month-${m.month}`}>
+                        <div className="mb-2 flex items-baseline justify-between">
+                          <div className="text-sm font-medium">{MONTH_NAMES[i]}</div>
+                          <div className="text-xs text-muted-foreground">рабочих {nf(m.work)}</div>
+                        </div>
+                        <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-muted-foreground">
+                          {["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((w) => <div key={w}>{w}</div>)}
+                        </div>
+                        <div className="mt-1 grid grid-cols-7 gap-1">
+                          {Array.from({ length: pad }, (_, k) => <div key={`pad-${k}`} />)}
+                          {days.map((d: any) => (
+                            <button
+                              key={d.date} type="button"
+                              className={cn(
+                                "num rounded border py-1 text-center text-xs transition-colors",
+                                DAY_KIND_CLASS[d.kind] ?? DAY_KIND_CLASS.work,
+                              )}
+                              title={`${ruDate(d.date)} — ${DAY_KIND_TEXT[d.kind] ?? d.kind}${d.note ? ` · ${d.note}` : ""}`}
+                              data-testid={`cal-day-${d.date}`}
+                              onClick={() => setDayKind.mutate({ id: d.id, kind: DAY_KIND_NEXT[d.kind] ?? "weekend" })}
+                            >
+                              {Number(d.date.slice(8, 10))}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
+                  Праздники расставлены по статье 112 ТК РФ, выходные с праздников перенесены на следующий рабочий день.
+                  Переносы на 2027 год и далее правительство утверждает отдельными постановлениями — проверьте их
+                  и поправьте дни вручную, когда постановление выйдет.
+                </div>
+              </>
+            )}
+          </Section>
+        </>
+      )}
+
       {tab === "absence" && (
         <>
           <div className="mb-4 flex items-center justify-between gap-3">
@@ -1965,6 +2394,8 @@ export default function Crew() {
                   <SelectItem value="trip">Командировка</SelectItem>
                   <SelectItem value="study">Обучение</SelectItem>
                   <SelectItem value="between">На межвахте</SelectItem>
+                  <SelectItem value="office">Работа в офисе (в выходной)</SelectItem>
+                  <SelectItem value="pp">Работа на ПП (в выходной)</SelectItem>
                 </SelectContent>
               </Select>
             </div>

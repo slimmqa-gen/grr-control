@@ -5,6 +5,7 @@ import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
 import { storage, restoreDemoData } from "./storage";
 import { buildAnalytics } from "./analytics";
 import { employeeTimesheet, allEmployeesTimesheet } from "./hr";
+import { calendarYear, calendarSummary, generateYear, resetCalendarCache, workDayMap } from "./calendar";
 import { buildWorkbook, buildSummaryWorkbook, type SheetKey } from "./excel";
 import {
   parseUpload, analyzeRows, commitImport, suggestMapping, buildTemplate,
@@ -19,6 +20,7 @@ import {
   insertLabSchema, insertAnalysisTypeSchema, insertSampleSchema, insertLabBatchSchema,
   insertAssaySchema, insertCoreLogSchema, insertCoreCutSchema,
   patchEmployeeEventSchema, patchSampleSchema, patchCoreLogSchema, patchCoreCutSchema,
+  WORK_DAY_KINDS,
   SAMPLE_STAGES, SAMPLE_TYPES, REJECT_REASONS, SHIP_METHODS, SAMPLE_ELEMENTS, ASSAY_UNITS,
   CUT_TYPES, CORE_LOG_STATUSES, CUT_STATUSES, CUT_REJECT_REASONS,
 } from "@shared/schema";
@@ -836,6 +838,139 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.delete("/api/shifts/:id", (req, res) => { storage.deleteShift(Number(req.params.id)); res.json({ ok: true }); });
 
+  // ---------- Производственный календарь ----------
+  app.get("/api/work-calendar/:year", (req, res) => {
+    try {
+      const year = Number(req.params.year) || new Date().getFullYear();
+      res.json({ ...calendarSummary(year), days: calendarYear(year) });
+    } catch (e) { fail(res, e); }
+  });
+
+  app.post("/api/work-calendar/:year/generate", (req, res) => {
+    try {
+      const year = Number(req.params.year) || new Date().getFullYear();
+      const created = generateYear(year);
+      resetCalendarCache();
+      audit(req, "Создание производственного календаря", "work_calendar", `${year}: дней ${created}`);
+      res.json({ ok: true, created });
+    } catch (e) { fail(res, e); }
+  });
+
+  app.patch("/api/work-calendar/day/:id", (req, res) => {
+    try {
+      const kind = String(req.body?.kind ?? "");
+      if (!WORK_DAY_KINDS.includes(kind as any)) throw new Error("Неизвестный тип дня");
+      const patch: any = { kind };
+      if (req.body?.note !== undefined) patch.note = String(req.body.note);
+      const updated = storage.updateWorkDay(Number(req.params.id), patch);
+      resetCalendarCache();
+      audit(req, "Изменение дня календаря", "work_calendar", `${updated?.date}: ${kind}`);
+      res.json(updated);
+    } catch (e) { fail(res, e); }
+  });
+
+  // ---------- Архив вахт ----------
+  /** Все вахты с ФИО, участком и числом дней: заезды и выезды за любой период */
+  app.get("/api/hr/shift-archive", (req, res) => {
+    try {
+      const from = String(req.query.from ?? "");
+      const to = String(req.query.to ?? "");
+      const emps = storage.employees();
+      const objs = storage.objects();
+      const rows = storage.shifts()
+        .filter((s: any) => (!from || s.endDate >= from) && (!to || s.startDate <= to))
+        .map((s: any) => {
+          const e = emps.find((x: any) => x.id === s.employeeId);
+          const days = Math.round(
+            (new Date(s.endDate + "T00:00:00Z").getTime() - new Date(s.startDate + "T00:00:00Z").getTime()) / 86400000,
+          ) + 1;
+          return {
+            shiftId: s.id, employeeId: s.employeeId,
+            fio: e?.fio ?? "сотрудник удалён", position: e?.position ?? "",
+            objectId: s.objectId, object: objs.find((o: any) => o.id === s.objectId)?.name ?? "не указан",
+            startDate: s.startDate, endDate: s.endDate, cycleType: s.cycleType, days,
+          };
+        })
+        .sort((a: any, b: any) => b.startDate.localeCompare(a.startDate) || a.fio.localeCompare(b.fio, "ru"));
+
+      const byObject = objs.map((o: any) => {
+        const list = rows.filter((r: any) => r.objectId === o.id);
+        return {
+          objectId: o.id, name: o.name, shifts: list.length,
+          people: new Set(list.map((r: any) => r.employeeId)).size,
+          manDays: list.reduce((sum: number, r: any) => sum + r.days, 0),
+        };
+      }).filter((o: any) => o.shifts > 0);
+
+      res.json({
+        rows, byObject,
+        total: {
+          shifts: rows.length,
+          people: new Set(rows.map((r: any) => r.employeeId)).size,
+          manDays: rows.reduce((sum: number, r: any) => sum + r.days, 0),
+        },
+      });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Срез на дату: кто был на вахте, кто отсутствовал и по какой причине */
+  app.get("/api/hr/on-date/:date", (req, res) => {
+    try {
+      const date = String(req.params.date).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("Дата в формате ГГГГ-ММ-ДД");
+      const emps = storage.employees();
+      const objs = storage.objects();
+      const allShifts = storage.shifts();
+      const events = storage.employeeEvents();
+      const calendar = workDayMap([Number(date.slice(0, 4))]);
+      const dayKind = calendar.get(date) ?? "work";
+
+      const rows = emps.map((e: any) => {
+        const shift = allShifts.find((s: any) => s.employeeId === e.id && s.startDate <= date && s.endDate >= date);
+        const event = events.find((ev: any) => ev.employeeId === e.id && ev.startDate <= date && ev.endDate >= date);
+        const prev = allShifts
+          .filter((s: any) => s.employeeId === e.id && s.endDate < date)
+          .sort((a: any, b: any) => b.endDate.localeCompare(a.endDate))[0];
+        let state = "unassigned";
+        if (event && event.kind !== "office" && event.kind !== "pp") state = event.kind;
+        else if (shift) state = "onshift";
+        else if (e.workStatus === "between") state = prev ? "between" : "unassigned";
+        else if (e.workStatus === "office" || e.workStatus === "pp")
+          state = dayKind === "weekend" || dayKind === "holiday" ? "dayoff" : "work";
+        return {
+          employeeId: e.id, fio: e.fio, position: e.position,
+          workStatus: e.workStatus, state,
+          object: shift
+            ? objs.find((o: any) => o.id === shift.objectId)?.name ?? "не указан"
+            : objs.find((o: any) => o.id === e.objectId)?.name ?? "",
+          shiftStart: shift?.startDate ?? "", shiftEnd: shift?.endDate ?? "",
+          lastShiftEnd: prev?.endDate ?? "",
+          eventKind: event?.kind ?? "", eventEnd: event?.endDate ?? "",
+        };
+      }).sort((a: any, b: any) => a.fio.localeCompare(b.fio, "ru"));
+
+      const onShift = rows.filter((r: any) => r.state === "onshift");
+      res.json({
+        date, dayKind,
+        rows,
+        byObject: objs.map((o: any) => ({
+          objectId: o.id, name: o.name,
+          people: onShift.filter((r: any) => r.object === o.name).length,
+        })).filter((o: any) => o.people > 0),
+        counters: {
+          total: rows.length,
+          onshift: onShift.length,
+          absent: rows.filter((r: any) => ["sick", "vacation", "study", "trip"].includes(r.state)).length,
+          between: rows.filter((r: any) => r.state === "between").length,
+          work: rows.filter((r: any) => r.state === "work").length,
+          dayoff: rows.filter((r: any) => r.state === "dayoff").length,
+        },
+      });
+    } catch (e) { fail(res, e); }
+  });
+
+
+
   // ---------- Справочник: лаборатории ----------
   app.post("/api/ref/labs", (req, res) => {
     try { res.json(storage.createLab(insertLabSchema.parse(req.body))); } catch (e) { fail(res, e); }
@@ -1212,6 +1347,65 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     crew: "Сотрудники и вахты", summary: "Сводка для директора",
     sampleprep: "Пробоподготовка", core: "Керн и распиловка",
   };
+  /** Выгрузка архива вахт: лист «Архив вахт» и лист итогов по участкам */
+  app.get("/api/export/shift-archive/xlsx", async (req, res) => {
+    try {
+      const from = String(req.query.from ?? "");
+      const to = String(req.query.to ?? "");
+      const emps = storage.employees();
+      const objs = storage.objects();
+      const rows = storage.shifts()
+        .filter((sh: any) => (!from || sh.endDate >= from) && (!to || sh.startDate <= to))
+        .sort((a: any, b: any) => b.startDate.localeCompare(a.startDate));
+
+      const ExcelJS = (await import("exceljs")).default;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Архив вахт");
+      ws.columns = [
+        { header: "Сотрудник", key: "fio", width: 28 },
+        { header: "Должность", key: "pos", width: 24 },
+        { header: "Участок", key: "obj", width: 22 },
+        { header: "Заезд", key: "start", width: 12 },
+        { header: "Выезд", key: "end", width: 12 },
+        { header: "Дней", key: "days", width: 8 },
+        { header: "Цикл", key: "cycle", width: 10 },
+      ];
+      for (const sh of rows) {
+        const e = emps.find((x: any) => x.id === sh.employeeId);
+        const days = Math.round(
+          (new Date(sh.endDate + "T00:00:00Z").getTime() - new Date(sh.startDate + "T00:00:00Z").getTime()) / 86400000,
+        ) + 1;
+        ws.addRow({
+          fio: e?.fio ?? "", pos: e?.position ?? "",
+          obj: objs.find((o: any) => o.id === sh.objectId)?.name ?? "",
+          start: sh.startDate, end: sh.endDate, days, cycle: sh.cycleType,
+        });
+      }
+      ws.getRow(1).font = { bold: true };
+
+      const ws2 = wb.addWorksheet("Итоги по участкам");
+      ws2.columns = [
+        { header: "Участок", key: "name", width: 24 },
+        { header: "Вахт", key: "shifts", width: 10 },
+        { header: "Человек", key: "people", width: 10 },
+        { header: "Человеко-дней", key: "manDays", width: 16 },
+      ];
+      for (const o of objs) {
+        const list = rows.filter((sh: any) => sh.objectId === o.id);
+        if (!list.length) continue;
+        ws2.addRow({
+          name: o.name, shifts: list.length,
+          people: new Set(list.map((sh: any) => sh.employeeId)).size,
+          manDays: list.reduce((sum: number, sh: any) => sum + (Math.round(
+            (new Date(sh.endDate + "T00:00:00Z").getTime() - new Date(sh.startDate + "T00:00:00Z").getTime()) / 86400000,
+          ) + 1), 0),
+        });
+      }
+      ws2.getRow(1).font = { bold: true };
+      await sendWorkbook(res, wb, `Архив вахт ${from || "начало"} — ${to || "сегодня"}.xlsx`);
+    } catch (e) { fail(res, e, 500); }
+  });
+
   app.get("/api/export/:section", async (req, res) => {
     try {
       const s = req.params.section;

@@ -3,7 +3,7 @@ import {
   importLogs, settings, equipment, costItems, inventoryItems, DEFAULT_THRESHOLDS, POSITIONS,
   labs, analysisTypes, samples, sampleMoves, labBatches, assays, coreLogs, coreCuts,
   users, sessions, auditLog, importProfiles, synonyms, excelTemplates,
-  estimates, estimateLines, depthRates, calendarPlans, calendarStages, employeeEvents, dashboardNotes,
+  estimates, estimateLines, depthRates, calendarPlans, calendarStages, employeeEvents, dashboardNotes, workCalendar,
 } from "@shared/schema";
 import type {
   ObjectRow, Rig, Brigade, Report, Cost, Fuel, Inventory, Employee, Shift, Position, ImportLog, Thresholds,
@@ -179,6 +179,9 @@ CREATE TABLE IF NOT EXISTS employee_events (
   kind TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
   destination TEXT NOT NULL DEFAULT '', destination_object_id INTEGER NOT NULL DEFAULT 0,
   note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS work_calendar (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'work', note TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS dashboard_notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL,
   remind_date TEXT NOT NULL DEFAULT '', done INTEGER NOT NULL DEFAULT 0,
@@ -589,6 +592,19 @@ export const storage = {
     return db.delete(employees).where(eq(employees.id, id)).run();
   },
 
+  workCalendar: () => db.select().from(workCalendar).all(),
+  workCalendarYear: (year: number) =>
+    db.select().from(workCalendar).all().filter((d: any) => String(d.date).slice(0, 4) === String(year)),
+  upsertWorkDays: (days: { date: string; kind: string; note: string }[]) => {
+    for (const d of days) {
+      const existing = db.select().from(workCalendar).where(eq(workCalendar.date, d.date)).get();
+      if (existing) db.update(workCalendar).set({ kind: d.kind, note: d.note }).where(eq(workCalendar.id, existing.id)).run();
+      else db.insert(workCalendar).values(d).run();
+    }
+    return days.length;
+  },
+  updateWorkDay: (id: number, v: any) =>
+    db.update(workCalendar).set(v).where(eq(workCalendar.id, id)).returning().get(),
   createShift: (v: any) => db.insert(shifts).values(v).returning().get(),
   updateShift: (id: number, v: any) => db.update(shifts).set(v).where(eq(shifts.id, id)).returning().get(),
   deleteShift: (id: number) => db.delete(shifts).where(eq(shifts.id, id)).run(),
