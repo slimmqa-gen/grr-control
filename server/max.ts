@@ -193,6 +193,13 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
         kind: action, createdAt: new Date().toISOString(),
       });
       replies++;
+      // при отказе просим причину следующим сообщением
+      if (action === "decline") {
+        if (link) storage.updateNotifyLink(link.id, { awaitingShift: shiftId });
+        await notifyResponsible(
+          `Отказ от заезда: ${employeeName(employeeId, userName)}. Спросил причину, пришлю, как ответит.`,
+        );
+      }
       if (callbackId) {
         try {
           await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
@@ -201,7 +208,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
               message: {
                 text: action === "confirm"
                   ? "Спасибо, ответ записан: вы подтвердили заезд."
-                  : "Ответ записан: вы не сможете приехать. С вами свяжется мастер.",
+                  : "Ответ записан. Напишите, пожалуйста, причину одним сообщением — передам руководителю.",
               },
             }),
           });
@@ -236,7 +243,25 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     return { linked, replies };
   }
 
-  // 3. запрос сводки: доступен только тем, кому разрешена рассылка сводок
+  // 3. причина отказа: человек уже нажал «Не смогу», ждём пояснение текстом
+  if (text && link && Number(link.awaitingShift) > 0) {
+    const shiftId = Number(link.awaitingShift);
+    storage.createMaxInbox({
+      employeeId, shiftId, chatId, userName, text,
+      kind: "reason", createdAt: new Date().toISOString(),
+    });
+    storage.updateNotifyLink(link.id, { awaitingShift: 0 });
+    replies++;
+    try {
+      await sendMax(chatId, "Причина записана, передал руководителю. Если планы изменятся — напишите здесь.");
+    } catch {
+      // подтверждение приёма не критично
+    }
+    await notifyResponsible(`Причина отказа. ${employeeName(employeeId, userName)}: ${text}`);
+    return { linked, replies };
+  }
+
+  // 4. запрос сводки: доступен только тем, кому разрешена рассылка сводок
   if (/^\/?(статус|сводка|status)$/i.test(text)) {
     const allowed = String(maxSettings().reportChatIds ?? "")
       .split(",").map((x) => x.trim()).filter(Boolean);
@@ -253,13 +278,14 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     return { linked, replies };
   }
 
-  // 4. обычный ответ сотрудника
+  // 5. обычный ответ сотрудника — попадёт в переписку
   if (text && type !== "bot_started") {
     storage.createMaxInbox({
       employeeId, shiftId: 0, chatId, userName, text,
       kind: "reply", createdAt: new Date().toISOString(),
     });
     replies++;
+    await notifyResponsible(`Сообщение от ${employeeName(employeeId, userName)}: ${text}`, chatId);
   }
   return { linked, replies };
 }
@@ -400,4 +426,99 @@ export function webhookSecretOk(header: string | undefined) {
 /** Отметка времени последнего события — по ней видно, живёт ли подписка */
 export function markMaxEvent() {
   saveMaxSettings({ lastEventAt: new Date().toISOString() });
+}
+
+/** ФИО из карточки, если человек привязан, иначе имя профиля MAX */
+function employeeName(employeeId: number, fallback: string) {
+  const e = storage.employees().find((x: any) => x.id === employeeId);
+  const fio = e?.fio ? String(e.fio) : "";
+  const position = e?.position ? `, ${e.position}` : "";
+  return fio ? `${fio}${position}` : (fallback || "неизвестный профиль");
+}
+
+/**
+ * Оповестить ответственных: сообщение в MAX и, если включено, СМС на их номера.
+ * `exceptChatId` не даёт отправить человеку его же сообщение, когда он сам
+ * отмечен ответственным.
+ */
+export async function notifyResponsible(text: string, exceptChatId = "") {
+  const s = maxSettings();
+  if (!s.notifyDecline) return { sent: 0 };
+  const targets = String(s.reportChatIds ?? "").split(",").map((x) => x.trim())
+    .filter((x) => x && x !== exceptChatId);
+  let sent = 0;
+  for (const chatId of targets) {
+    try {
+      const r = await sendMax(chatId, text);
+      if (r.ok) sent++;
+    } catch {
+      // не дошло в MAX — ниже может уйти СМС
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600));
+  }
+  if (s.duplicateSms) {
+    try {
+      const { sendSms } = await import("./sms");
+      const links = storage.notifyLinks().filter((l: any) =>
+        l.channel === "max" && targets.includes(String(l.chatId)));
+      for (const l of links) {
+        const phone = storage.employees().find((e: any) => e.id === l.employeeId)?.phone ?? "";
+        if (phone) await sendSms(phone, text.slice(0, 300));
+      }
+    } catch {
+      // СМС — резерв, ошибку не поднимаем
+    }
+  }
+  return { sent };
+}
+
+/** Переписка: список диалогов с последним сообщением и числом непрочитанных */
+export function maxChats() {
+  const emps = storage.employees();
+  const byEmployee = new Map<number, any[]>();
+  for (const r of storage.maxInbox()) {
+    if (!r.employeeId) continue;
+    const list = byEmployee.get(r.employeeId) ?? [];
+    list.push(r);
+    byEmployee.set(r.employeeId, list);
+  }
+  return [...byEmployee.entries()]
+    .map(([employeeId, list]) => {
+      const sorted = list.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+      const last = sorted[sorted.length - 1];
+      const e = emps.find((x: any) => x.id === employeeId);
+      return {
+        employeeId,
+        fio: e?.fio ?? "сотрудник удалён",
+        position: e?.position ?? "",
+        lastText: last?.text ?? "",
+        lastKind: last?.kind ?? "",
+        lastAt: last?.createdAt ?? "",
+        unread: sorted.filter((r) => !r.seen && r.kind !== "outgoing").length,
+        total: sorted.length,
+      };
+    })
+    .sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt)));
+}
+
+/** Переписка с одним человеком по порядку сообщений */
+export function maxChat(employeeId: number) {
+  const e = storage.employees().find((x: any) => x.id === employeeId);
+  const messages = storage.maxInbox()
+    .filter((r: any) => r.employeeId === employeeId)
+    .sort((a: any, b: any) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  return {
+    employeeId,
+    fio: e?.fio ?? "сотрудник удалён",
+    position: e?.position ?? "",
+    phone: e?.phone ?? "",
+    linked: !!maxChatId(employeeId),
+    messages,
+  };
+}
+
+/** Отметить переписку прочитанной */
+export function markChatSeen(employeeId: number) {
+  storage.markMaxInboxSeen(employeeId);
+  return { ok: true };
 }

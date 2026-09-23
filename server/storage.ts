@@ -181,13 +181,14 @@ CREATE TABLE IF NOT EXISTS employee_events (
   note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS max_inbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL DEFAULT 0,
+  seen INTEGER NOT NULL DEFAULT 0,
   shift_id INTEGER NOT NULL DEFAULT 0, chat_id TEXT NOT NULL DEFAULT '',
   user_name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '',
   kind TEXT NOT NULL DEFAULT 'reply', created_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS notify_links (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
   channel TEXT NOT NULL DEFAULT 'max', chat_id TEXT NOT NULL DEFAULT '',
-  code TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '',
+  code TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', awaiting_shift INTEGER NOT NULL DEFAULT 0,
   linked_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS sms_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL DEFAULT 0,
@@ -235,6 +236,16 @@ try {
 
 // Миграция: ручной статус сотрудника (отпуск/больничный/командировка/обучение) появился позже
 try {
+  // ожидание причины отказа и отметка прочтения переписки появились позже
+  const nl = sqlite.prepare("PRAGMA table_info(notify_links)").all() as any[];
+  if (nl.length && !nl.some((c) => c.name === "awaiting_shift")) {
+    sqlite.exec("ALTER TABLE notify_links ADD COLUMN awaiting_shift INTEGER NOT NULL DEFAULT 0");
+  }
+  const mi = sqlite.prepare("PRAGMA table_info(max_inbox)").all() as any[];
+  if (mi.length && !mi.some((c) => c.name === "seen")) {
+    sqlite.exec("ALTER TABLE max_inbox ADD COLUMN seen INTEGER NOT NULL DEFAULT 0");
+  }
+
   const cols = sqlite.prepare("PRAGMA table_info(employees)").all() as any[];
   if (!cols.some((c) => c.name === "manual_status"))
     sqlite.exec("ALTER TABLE employees ADD COLUMN manual_status TEXT NOT NULL DEFAULT ''");
@@ -608,6 +619,8 @@ export const storage = {
   },
 
   maxInbox: () => db.select().from(maxInbox).all(),
+  markMaxInboxSeen: (employeeId: number) =>
+    db.update(maxInbox).set({ seen: 1 }).where(eq(maxInbox.employeeId, employeeId)).run(),
   createMaxInbox: (v: any) => db.insert(maxInbox).values(v).returning().get(),
   notifyLinks: () => db.select().from(notifyLinks).all(),
   createNotifyLink: (v: any) => db.insert(notifyLinks).values(v).returning().get(),

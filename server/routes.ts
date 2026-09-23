@@ -14,7 +14,7 @@ import {
 import {
   publicMaxSettings, saveMaxSettings, maxSettings, maxBotInfo, inviteFor, pollMaxUpdates, unlinkMax,
   maxInboxRows, replyInMax, enableMaxWebhook, disableMaxWebhook, maxWebhooks,
-  webhookSecretOk, markMaxEvent, handleMaxUpdate,
+  webhookSecretOk, markMaxEvent, handleMaxUpdate, maxChats, maxChat, markChatSeen,
 } from "./max";
 import { buildWorkbook, buildSummaryWorkbook, type SheetKey } from "./excel";
 import {
@@ -863,6 +863,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (b.clearToken) patch.token = "";
       if (b.reportEnabled !== undefined) patch.reportEnabled = !!b.reportEnabled;
       if (b.reportChatIds !== undefined) patch.reportChatIds = String(b.reportChatIds);
+      if (b.notifyDecline !== undefined) patch.notifyDecline = !!b.notifyDecline;
+      if (b.duplicateSms !== undefined) patch.duplicateSms = !!b.duplicateSms;
       if (b.reportHour !== undefined) {
         patch.reportHour = Math.min(23, Math.max(0, Number(b.reportHour) || 0));
       }
@@ -955,6 +957,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       audit(req, "Сводка по подтверждениям в MAX", "max", `получателей ${out.sent}`);
       res.json(out);
     } catch (e) { fail(res, e); }
+  });
+
+  /** Переписка: список диалогов */
+  app.get("/api/max/chats", (_req, res) => {
+    try { res.json({ rows: maxChats() }); } catch (e) { fail(res, e); }
+  });
+
+  /** Переписка с одним сотрудником */
+  app.get("/api/max/chat/:employeeId", (req, res) => {
+    try { res.json(maxChat(Number(req.params.employeeId))); } catch (e) { fail(res, e); }
+  });
+
+  /** Отметить переписку прочитанной */
+  app.post("/api/max/chat/:employeeId/seen", (req, res) => {
+    try { res.json(markChatSeen(Number(req.params.employeeId))); } catch (e) { fail(res, e); }
   });
 
   /** Ответы сотрудников из MAX */

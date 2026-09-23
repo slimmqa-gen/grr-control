@@ -295,6 +295,8 @@ export const notifyLinks = sqliteTable("notify_links", {
   code: text("code").notNull().default(""),
   name: text("name").notNull().default(""),
   linkedAt: text("linked_at").notNull().default(""),
+  /** номер вахты, по которой ждём от человека причину отказа */
+  awaitingShift: integer("awaiting_shift").notNull().default(0),
 });
 export type NotifyLink = typeof notifyLinks.$inferSelect;
 
@@ -307,6 +309,8 @@ export const maxInbox = sqliteTable("max_inbox", {
   userName: text("user_name").notNull().default(""),
   text: text("text").notNull().default(""),
   kind: text("kind").notNull().default("reply"),
+  /** прочитано ли сообщение в переписке */
+  seen: integer("seen").notNull().default(0),
   createdAt: text("created_at").notNull().default(""),
 });
 export type MaxInboxRow = typeof maxInbox.$inferSelect;
@@ -336,11 +340,16 @@ export type MaxSettings = {
   reportHour: number;
   /** дата последней отправленной сводки */
   reportLastDate: string;
+  /** сообщать ответственным об отказах сразу */
+  notifyDecline: boolean;
+  /** дублировать такие оповещения СМС на телефоны ответственных */
+  duplicateSms: boolean;
 };
 export const DEFAULT_MAX_SETTINGS: MaxSettings = {
   enabled: false, token: "", botName: "", marker: 0,
   mode: "poll", webhookUrl: "", webhookSecret: "", webhookAt: "", lastEventAt: "",
   reportEnabled: false, reportChatIds: "", reportHour: 18, reportLastDate: "",
+  notifyDecline: true, duplicateSms: false,
 };
 
 /** Журнал СМС-уведомлений: что, кому и когда отправлено */

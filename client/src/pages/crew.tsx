@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet, Link2, Copy, RefreshCw } from "lucide-react";
+import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet, Link2, Copy, RefreshCw, Settings, MessagesSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -150,7 +150,11 @@ export default function Crew() {
   const empEventsQ = useList<any>("/api/employee-events");
   const { toast } = useToast();
 
-  const [tab, setTab] = useState<"dash" | "people" | "shifts" | "absence" | "arch" | "cal" | "sms">("dash");
+  const [tab, setTab] = useState<
+    "dash" | "people" | "shifts" | "absence" | "arch" | "cal" | "sms" | "chat" | "setup"
+  >("dash");
+  // три вкладки работают с одними данными: рассылка, переписка и настройки каналов
+  const notifyTab = tab === "sms" || tab === "chat" || tab === "setup";
 
   // фильтры справочника сотрудников
   const [q, setQ] = useState("");
@@ -542,9 +546,9 @@ export default function Crew() {
   });
 
   // ---- СМС-вызов на вахту ----
-  const smsSettings = useQuery<any>({ queryKey: ["/api/sms/settings"], enabled: tab === "sms" });
-  const smsPending = useQuery<any>({ queryKey: ["/api/sms/pending"], enabled: tab === "sms" });
-  const smsLog = useQuery<any>({ queryKey: ["/api/sms/log"], enabled: tab === "sms" });
+  const smsSettings = useQuery<any>({ queryKey: ["/api/sms/settings"], enabled: notifyTab });
+  const smsPending = useQuery<any>({ queryKey: ["/api/sms/pending"], enabled: notifyTab });
+  const smsLog = useQuery<any>({ queryKey: ["/api/sms/log"], enabled: notifyTab });
   const [smsForm, setSmsForm] = useState<any>(null);
   const [smsSecret, setSmsSecret] = useState({ password: "", apikey: "" });
   const [testPhone, setTestPhone] = useState("");
@@ -564,12 +568,12 @@ export default function Crew() {
     },
     onError: (e: any) => toast({ title: "Не удалось сохранить", description: String(e.message), variant: "destructive" }),
   });
-  const smsRecipients = useQuery<any>({ queryKey: ["/api/sms/recipients"], enabled: tab === "sms" });
+  const smsRecipients = useQuery<any>({ queryKey: ["/api/sms/recipients"], enabled: notifyTab });
   const [smsChannel, setSmsChannel] = useState("auto");
 
   // ---- бот MAX ----
-  const maxSettings = useQuery<any>({ queryKey: ["/api/max/settings"], enabled: tab === "sms" });
-  const maxInvites = useQuery<any>({ queryKey: ["/api/max/invites"], enabled: tab === "sms" });
+  const maxSettings = useQuery<any>({ queryKey: ["/api/max/settings"], enabled: notifyTab });
+  const maxInvites = useQuery<any>({ queryKey: ["/api/max/invites"], enabled: notifyTab });
   const [maxForm, setMaxForm] = useState<any>(null);
   const [maxToken, setMaxToken] = useState("");
   const [maxBot, setMaxBot] = useState("");
@@ -623,17 +627,36 @@ export default function Crew() {
     onSuccess: (d: any) => toast({ title: `Сводка отправлена: получателей ${d?.sent ?? 0}` }),
     onError: (e: any) => toast({ title: "Сводка не ушла", description: String(e.message), variant: "destructive" }),
   });
-  const digest = useQuery<any>({ queryKey: ["/api/max/digest"], enabled: tab === "sms" });
+  const digest = useQuery<any>({ queryKey: ["/api/max/digest"], enabled: notifyTab });
+
+  const [chatWith, setChatWith] = useState<number | null>(null);
+  const maxChats = useQuery<any>({
+    queryKey: ["/api/max/chats"],
+    enabled: true,
+    refetchInterval: 30000,
+  });
+  const unreadTotal = (maxChats.data?.rows ?? []).reduce((acc: number, r: any) => acc + (r.unread ?? 0), 0);
+  const maxChat = useQuery<any>({
+    queryKey: [`/api/max/chat/${chatWith ?? 0}`],
+    enabled: tab === "chat" && !!chatWith,
+    refetchInterval: tab === "chat" && chatWith ? 15000 : false,
+  });
+  const markSeen = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/max/chat/${id}/seen`, {}),
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
 
   const maxInbox = useQuery<any>({
     queryKey: ["/api/max/inbox"],
-    enabled: tab === "sms",
-    refetchInterval: tab === "sms" ? 30000 : false,
+    enabled: notifyTab,
+    refetchInterval: notifyTab ? 30000 : false,
   });
   const [replyTo, setReplyTo] = useState<{ id: number; fio: string } | null>(null);
   const [replyText, setReplyText] = useState("");
   const sendReply = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/max/reply", { employeeId: replyTo?.id, text: replyText }),
+    // получателя передаём аргументом: состояние формы обновляется позже вызова
+    mutationFn: (v: { employeeId: number; text: string }) =>
+      apiRequest("POST", "/api/max/reply", v),
     onSuccess: () => {
       setReplyText(""); setReplyTo(null);
       queryClient.invalidateQueries();
@@ -966,6 +989,29 @@ export default function Crew() {
         >
           <MessageSquare className="mr-2 h-4 w-4" />
           Вызов на вахту
+        </Button>
+        <Button
+          size="sm"
+          variant={tab === "chat" ? "default" : "ghost"}
+          onClick={() => setTab("chat")}
+          data-testid="tab-chat"
+        >
+          <MessageSquare className="mr-2 h-4 w-4" />
+          Переписка
+          {unreadTotal > 0 && (
+            <Badge variant="destructive" className="ml-2 px-1.5 text-[10px]" data-testid="badge-unread">
+              {unreadTotal}
+            </Badge>
+          )}
+        </Button>
+        <Button
+          size="sm"
+          variant={tab === "setup" ? "default" : "ghost"}
+          onClick={() => setTab("setup")}
+          data-testid="tab-setup"
+        >
+          <Settings className="mr-2 h-4 w-4" />
+          Настройка уведомлений
         </Button>
       </div>
 
@@ -2070,7 +2116,7 @@ export default function Crew() {
       )}
 
 
-      {tab === "sms" && (
+      {tab === "setup" && (
         <>
           <Section
             title="Вызов на вахту по СМС"
@@ -2350,7 +2396,7 @@ export default function Crew() {
                   <div className="mt-3 grid gap-3 sm:grid-cols-3">
                     <div className="sm:col-span-2">
                       <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                        Кому присылать — отметьте руководителей
+                        Кому присылать сводки и оповещения — отметьте ответственных
                       </label>
                       <div className="flex flex-wrap gap-2" data-testid="list-max-report-targets">
                         {(maxInvites.data?.rows ?? []).filter((r: any) => r.linked).length === 0 ? (
@@ -2390,6 +2436,24 @@ export default function Crew() {
                         data-testid="input-max-report-hour"
                       />
                     </div>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={!!maxF.notifyDecline}
+                        onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, notifyDecline: v })}
+                        data-testid="check-notify-decline"
+                      />
+                      Сообщать сразу об отказах, причинах и сообщениях сотрудников
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={!!maxF.duplicateSms}
+                        onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, duplicateSms: v })}
+                        data-testid="check-duplicate-sms"
+                      />
+                      Дублировать такие оповещения СМС на телефоны ответственных
+                    </label>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button
@@ -2496,6 +2560,11 @@ export default function Crew() {
             )}
           </Section>
 
+        </>
+      )}
+
+      {tab === "sms" && (
+        <>
           <Section
             title="Кого вызывать"
             description="Заезды в ближайшие дни. Программа отправляет каждому один раз — повторно кнопкой не задублируется."
@@ -2747,6 +2816,143 @@ export default function Crew() {
             )}
           </Section>
 
+        </>
+      )}
+
+      {tab === "chat" && (
+        <>
+          <Section
+            title="Переписка через бота MAX"
+            description="Слева — люди, справа — история сообщений. Пишите прямо здесь, человек получит сообщение в MAX."
+            actions={
+              <Button
+                size="sm" variant="outline" onClick={() => pollMax.mutate()}
+                disabled={pollMax.isPending} data-testid="button-chat-refresh"
+              >
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Обновить
+              </Button>
+            }
+          >
+            <div className="grid gap-3 lg:grid-cols-[280px_1fr]">
+              <div className="max-h-[60vh] overflow-auto rounded-md border" data-testid="list-chats">
+                {(maxChats.data?.rows ?? []).length === 0 ? (
+                  <div className="p-3 text-sm text-muted-foreground">
+                    Переписки пока нет. Она появится, как только сотрудник ответит боту.
+                  </div>
+                ) : (maxChats.data?.rows ?? []).map((c: any) => (
+                  <button
+                    key={c.employeeId}
+                    onClick={() => {
+                      setChatWith(c.employeeId);
+                      if (c.unread > 0) markSeen.mutate(c.employeeId);
+                    }}
+                    className={cn("w-full border-b p-3 text-left last:border-0 hover:bg-muted/60",
+                      chatWith === c.employeeId && "bg-muted")}
+                    data-testid={`chat-item-${c.employeeId}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">{c.fio}</span>
+                      {c.unread > 0 && (
+                        <Badge variant="destructive" className="px-1.5 text-[10px]">{c.unread}</Badge>
+                      )}
+                    </div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {c.lastKind === "outgoing" ? "вы: " : ""}{c.lastText}
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              <div className="rounded-md border">
+                {!chatWith ? (
+                  <div className="p-6 text-center text-sm text-muted-foreground">
+                    Выберите человека слева, чтобы открыть переписку.
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
+                      <div>
+                        <div className="font-medium" data-testid="text-chat-fio">{maxChat.data?.fio ?? ""}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {maxChat.data?.position ?? ""}{maxChat.data?.phone ? ` · ${maxChat.data.phone}` : ""}
+                        </div>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={cn("text-[11px]", maxChat.data?.linked
+                          ? "border-emerald-500 text-emerald-600" : "border-amber-500 text-amber-600")}
+                      >
+                        {maxChat.data?.linked ? "бот привязан" : "бот не привязан"}
+                      </Badge>
+                    </div>
+
+                    <div className="max-h-[48vh] space-y-2 overflow-auto p-3" data-testid="list-chat-messages">
+                      {(maxChat.data?.messages ?? []).length === 0 ? (
+                        <div className="text-sm text-muted-foreground">Сообщений пока нет.</div>
+                      ) : (maxChat.data?.messages ?? []).map((msg: any) => {
+                        const mine = msg.kind === "outgoing";
+                        const label =
+                          msg.kind === "confirm" ? "подтвердил заезд" :
+                          msg.kind === "decline" ? "отказался от заезда" :
+                          msg.kind === "reason" ? "причина отказа" : "";
+                        return (
+                          <div
+                            key={msg.id}
+                            className={cn("flex", mine ? "justify-end" : "justify-start")}
+                            data-testid={`chat-msg-${msg.id}`}
+                          >
+                            <div
+                              className={cn("max-w-[80%] rounded-lg px-3 py-2 text-sm",
+                                mine ? "bg-primary text-primary-foreground" : "bg-muted",
+                                msg.kind === "decline" && "border border-rose-400",
+                                msg.kind === "confirm" && "border border-emerald-400")}
+                            >
+                              {label && (
+                                <div className={cn("mb-1 text-[11px] font-medium",
+                                  mine ? "text-primary-foreground/80" : "text-muted-foreground")}>
+                                  {label}
+                                </div>
+                              )}
+                              <div className="whitespace-pre-wrap">{msg.text}</div>
+                              <div className={cn("mt-1 text-[10px]",
+                                mine ? "text-primary-foreground/70" : "text-muted-foreground")}>
+                                {String(msg.createdAt).slice(8, 10)}.{String(msg.createdAt).slice(5, 7)}
+                                {" "}{String(msg.createdAt).slice(11, 16)}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="border-t p-3">
+                      <Textarea
+                        rows={2} value={replyText} onChange={(e) => setReplyText(e.target.value)}
+                        placeholder={maxChat.data?.linked
+                          ? "Сообщение уйдёт в MAX этому человеку"
+                          : "Человек не привязал бота — сообщение отправить нельзя"}
+                        disabled={!maxChat.data?.linked}
+                        data-testid="input-chat-text"
+                      />
+                      <div className="mt-2 flex justify-end">
+                        <Button
+                          size="sm"
+                          onClick={() => sendReply.mutate({ employeeId: chatWith, text: replyText })}
+                          disabled={!replyText.trim() || !maxChat.data?.linked || sendReply.isPending}
+                          data-testid="button-chat-send"
+                        >
+                          <Send className="mr-2 h-4 w-4" />
+                          Отправить
+                        </Button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </Section>
+
           <Section
             title="Ответы сотрудников из MAX"
             description="Нажатия кнопок «Подтверждаю» и «Не смогу», а также обычные сообщения в чате с ботом. Обновляется само."
@@ -2811,7 +3017,7 @@ export default function Crew() {
                 />
                 <div className="mt-2 flex gap-2">
                   <Button
-                    size="sm" onClick={() => sendReply.mutate()}
+                    size="sm" onClick={() => sendReply.mutate({ employeeId: replyTo!.id, text: replyText })}
                     disabled={!replyText.trim() || sendReply.isPending}
                     data-testid="button-max-reply-send"
                   >
@@ -2826,6 +3032,11 @@ export default function Crew() {
             )}
           </Section>
 
+        </>
+      )}
+
+      {tab === "sms" && (
+        <>
           <Section title="Журнал отправок" description="Последние сообщения и ответ шлюза">
             {smsLog.isLoading ? <Loading rows={3} /> : (smsLog.data?.rows ?? []).length === 0 ? (
               <Empty text="Сообщений ещё не было." />
