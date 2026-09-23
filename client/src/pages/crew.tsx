@@ -564,6 +564,58 @@ export default function Crew() {
     },
     onError: (e: any) => toast({ title: "Не удалось сохранить", description: String(e.message), variant: "destructive" }),
   });
+  const smsRecipients = useQuery<any>({ queryKey: ["/api/sms/recipients"], enabled: tab === "sms" });
+  const [smsPicked, setSmsPicked] = useState<number[]>([]);
+  const [smsQ, setSmsQ] = useState("");
+  const [smsObject, setSmsObject] = useState("all");
+  const [smsOwnText, setSmsOwnText] = useState("");
+  // номера, введённые вручную: id сотрудника → номер
+  const [smsPhones, setSmsPhones] = useState<Record<number, string>>({});
+  const [smsExtra, setSmsExtra] = useState("");
+  const [smsSavePhones, setSmsSavePhones] = useState(true);
+
+  /** Номер годен, если это 10 цифр с 9 или 11 цифр с 7/8 */
+  const phoneOk = (v: string) => {
+    const d = String(v ?? "").replace(/\D/g, "");
+    return (d.length === 11 && /^[78]/.test(d)) || (d.length === 10 && d.startsWith("9"));
+  };
+  const rowPhoneOk = (r: any) => r.phoneOk || phoneOk(smsPhones[r.employeeId] ?? "");
+
+  const smsRows = useMemo(() => {
+    const rows: any[] = smsRecipients.data?.rows ?? [];
+    const needle = smsQ.trim().toLowerCase();
+    return rows.filter((r) =>
+      (smsObject === "all" || String(r.objectId) === smsObject)
+      && (!needle || String(r.fio).toLowerCase().includes(needle)));
+  }, [smsRecipients.data, smsQ, smsObject]);
+
+  const togglePicked = (id: number) =>
+    setSmsPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  const sendToPicked = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/sms/send-to", {
+      employeeIds: smsPicked,
+      phones: Object.fromEntries(
+        Object.entries(smsPhones).filter(([id, v]) => smsPicked.includes(Number(id)) && phoneOk(String(v)))),
+      savePhones: smsSavePhones,
+      extraPhones: smsExtra,
+      ...(smsOwnText.trim() ? { text: smsOwnText } : {}),
+    }),
+    onSuccess: async (r: any) => {
+      const out = await r.json();
+      setSmsPicked([]);
+      setSmsExtra("");
+      queryClient.invalidateQueries();
+      const bad = (out.results ?? []).filter((x: any) => !x.ok);
+      toast({
+        title: `Отправлено ${out.sent} из ${out.sent + out.failed}`,
+        description: bad.length ? `Не ушло: ${bad.map((x: any) => x.fio).join(", ")}` : "Все сообщения приняты шлюзом",
+        variant: out.failed && !out.sent ? "destructive" : undefined,
+      });
+    },
+    onError: (e: any) => toast({ title: "Отправка не прошла", description: String(e.message), variant: "destructive" }),
+  });
+
   const runSms = useMutation({
     mutationFn: (shiftIds?: number[]) => apiRequest("POST", "/api/sms/run", shiftIds ? { shiftIds } : {}),
     onSuccess: async (r: any) => {
@@ -2134,6 +2186,168 @@ export default function Crew() {
                     )}
                   </div>
                 ))}
+              </div>
+            )}
+          </Section>
+
+          <Section
+            title="Отправить выбранным"
+            description="Отметьте людей в списке и отправьте сообщение — независимо от того, есть ли у них заезд в ближайшие дни"
+            actions={
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" data-testid="text-sms-picked">выбрано {nf(smsPicked.length)}</Badge>
+                <Button
+                  size="sm" disabled={(!smsPicked.length && !smsExtra.trim()) || sendToPicked.isPending}
+                  onClick={() => sendToPicked.mutate()}
+                  data-testid="button-sms-send-picked"
+                >
+                  <Send className="mr-2 h-4 w-4" />
+                  Отправить выбранным
+                </Button>
+              </div>
+            }
+          >
+            <div className="mb-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Поиск по фамилии</label>
+                <div className="relative">
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    className="pl-8" value={smsQ} onChange={(e) => setSmsQ(e.target.value)}
+                    placeholder="Фамилия" data-testid="input-sms-search"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Участок</label>
+                <Select value={smsObject} onValueChange={setSmsObject}>
+                  <SelectTrigger data-testid="filter-sms-object"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Все участки</SelectItem>
+                    {objects.map((o: any) => (
+                      <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-end gap-2">
+                <Button
+                  size="sm" variant="outline"
+                  onClick={() => setSmsPicked(smsRows.filter((r: any) => rowPhoneOk(r)).map((r: any) => r.employeeId))}
+                  data-testid="button-sms-pick-all"
+                >
+                  Отметить всех в списке
+                </Button>
+                <Button
+                  size="sm" variant="ghost" onClick={() => setSmsPicked([])}
+                  disabled={!smsPicked.length} data-testid="button-sms-pick-none"
+                >
+                  Снять отметки
+                </Button>
+              </div>
+            </div>
+
+            <div className="mb-3">
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Свой текст для этой отправки (если пусто — берётся шаблон выше)
+              </label>
+              <Textarea
+                rows={2} value={smsOwnText} onChange={(e) => setSmsOwnText(e.target.value)}
+                placeholder="Например: ПБК: заезд перенесён на {дата}, {участок}. Явка по графику"
+                data-testid="input-sms-own-text"
+              />
+              <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                    Дополнительные номера через запятую (без привязки к сотруднику)
+                  </label>
+                  <Input
+                    value={smsExtra} onChange={(e) => setSmsExtra(e.target.value)}
+                    placeholder="+7 913 000-00-00, +7 923 111-22-33"
+                    data-testid="input-sms-extra"
+                  />
+                </div>
+                <div className="flex items-end gap-2 pb-1">
+                  <Checkbox
+                    checked={smsSavePhones}
+                    onCheckedChange={(v: any) => setSmsSavePhones(!!v)}
+                    data-testid="check-sms-save-phones"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Сохранять введённые вручную номера в карточки сотрудников
+                  </span>
+                </div>
+              </div>
+              {smsOwnText.trim() && (
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Символов {nf([...smsOwnText].length)} · частей в сообщении примерно{" "}
+                  {nf([...smsOwnText].length <= 70 ? 1 : Math.ceil([...smsOwnText].length / 67))}
+                </div>
+              )}
+            </div>
+
+            {smsRecipients.isLoading ? <Loading rows={4} /> : smsRows.length === 0 ? (
+              <Empty text="Никого не нашли. Измените поиск или участок." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" data-testid="table-sms-recipients">
+                  <thead>
+                    <tr className="border-b text-left text-xs text-muted-foreground">
+                      <th className="w-8 py-2 pr-2" />
+                      <th className="py-2 pr-3 font-medium">Сотрудник</th>
+                      <th className="py-2 pr-3 font-medium">Участок</th>
+                      <th className="py-2 pr-3 font-medium">Телефон</th>
+                      <th className="py-2 pr-3 font-medium">Ближайшая вахта</th>
+                      <th className="py-2 pr-3 font-medium">Последняя отправка</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {smsRows.map((r: any) => (
+                      <tr
+                        key={r.employeeId}
+                        className="border-b hover:bg-muted/50"
+                        data-testid={`sms-pick-row-${r.employeeId}`}
+                      >
+                        <td className="py-2 pr-2">
+                          <Checkbox
+                            checked={smsPicked.includes(r.employeeId)}
+                            disabled={!rowPhoneOk(r)}
+                            onCheckedChange={() => togglePicked(r.employeeId)}
+                            data-testid={`sms-check-${r.employeeId}`}
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <div className="font-medium">{r.fio}</div>
+                          <div className="text-xs text-muted-foreground">{r.position}</div>
+                        </td>
+                        <td className="py-2 pr-3">{r.object || "—"}</td>
+                        <td className="py-2 pr-3">
+                          {r.phoneOk ? (
+                            <span className="num">{r.phone}</span>
+                          ) : (
+                            <Input
+                              value={smsPhones[r.employeeId] ?? ""}
+                              onChange={(e) => setSmsPhones({ ...smsPhones, [r.employeeId]: e.target.value })}
+                              placeholder="введите номер"
+                              className={cn("h-8 w-40", smsPhones[r.employeeId] && !phoneOk(smsPhones[r.employeeId]) && "border-amber-500")}
+                              data-testid={`input-sms-phone-${r.employeeId}`}
+                            />
+                          )}
+                        </td>
+                        <td className="num py-2 pr-3 whitespace-nowrap">
+                          {r.shiftStart
+                            ? `${ruDate(r.shiftStart)} — ${ruDate(r.shiftEnd)}`
+                            : <span className="text-xs text-muted-foreground">не назначена</span>}
+                        </td>
+                        <td className="py-2 pr-3 text-xs text-muted-foreground">
+                          {r.lastSentAt
+                            ? `${String(r.lastSentAt).slice(8, 10)}.${String(r.lastSentAt).slice(5, 7)} ${String(r.lastSentAt).slice(11, 16)}`
+                            : "не отправляли"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </Section>

@@ -187,6 +187,119 @@ export async function runCallouts(shiftIds?: number[]) {
 }
 
 /**
+ * Отправка выбранным сотрудникам. Текст можно задать свой, иначе берётся шаблон
+ * и подставляются данные ближайшей вахты сотрудника. Дублей программа не проверяет:
+ * это ручная отправка по решению руководителя.
+ */
+export async function sendToEmployees(
+  employeeIds: number[],
+  customText?: string,
+  /** Номера, введённые вручную: employeeId → номер. Перебивают номер из карточки. */
+  phoneOverrides?: Record<string, string>,
+  /** Сохранять введённые вручную номера в карточки сотрудников */
+  savePhones = false,
+) {
+  const s = smsSettings();
+  const today = todayIso();
+  const emps = storage.employees();
+  const objs = storage.objects();
+  const allShifts = storage.shifts();
+  const results: { employeeId: number; fio: string; phone: string; ok: boolean; response: string }[] = [];
+
+  for (const id of employeeIds) {
+    const e = emps.find((x: any) => x.id === id);
+    if (!e) continue;
+    const shift = allShifts
+      .filter((sh: any) => sh.employeeId === id && sh.endDate >= today)
+      .sort((a: any, b: any) => a.startDate.localeCompare(b.startDate))[0];
+    const object = shift
+      ? objs.find((o: any) => o.id === shift.objectId)?.name ?? "участок не указан"
+      : objs.find((o: any) => o.id === e.objectId)?.name ?? "участок не указан";
+    const daysLeft = shift
+      ? Math.round((new Date(shift.startDate + "T00:00:00Z").getTime() - new Date(today + "T00:00:00Z").getTime()) / 86400000)
+      : 0;
+    const text = (customText && customText.trim())
+      ? renderTemplate(customText, {
+          фио: e.fio ?? "", дата: ruDate(shift?.startDate ?? ""), участок: object,
+          должность: e.position ?? "", дней: String(daysLeft), контакт: s.contact,
+          выезд: ruDate(shift?.endDate ?? ""),
+        })
+      : renderTemplate(s.template, {
+          фио: e.fio ?? "", дата: ruDate(shift?.startDate ?? ""), участок: object,
+          должность: e.position ?? "", дней: String(daysLeft), контакт: s.contact,
+          выезд: ruDate(shift?.endDate ?? ""),
+        });
+
+    const manual = String(phoneOverrides?.[String(id)] ?? "").trim();
+    const phone = manual || (e.phone ?? "");
+    if (manual && savePhones && normalizePhone(manual) && manual !== e.phone) {
+      storage.updateEmployee(id, { phone: manual });
+    }
+
+    const r = await sendSms(phone, text);
+    storage.createSmsLog({
+      employeeId: id, shiftId: shift?.id ?? 0, phone, text,
+      kind: "manual", status: r.status, response: r.response, createdAt: new Date().toISOString(),
+    });
+    results.push({ employeeId: id, fio: e.fio ?? "", phone, ok: r.ok, response: r.response });
+  }
+  return { sent: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results };
+}
+
+/** Отправка на номера, введённые вручную и не привязанные к сотруднику */
+export async function sendToPhones(phones: string[], text: string) {
+  const results: { phone: string; ok: boolean; response: string }[] = [];
+  for (const raw of phones) {
+    const phone = String(raw ?? "").trim();
+    if (!phone) continue;
+    const r = await sendSms(phone, text);
+    storage.createSmsLog({
+      employeeId: 0, shiftId: 0, phone, text, kind: "manual",
+      status: r.status, response: r.response, createdAt: new Date().toISOString(),
+    });
+    results.push({ phone, ok: r.ok, response: r.response });
+  }
+  return { sent: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results };
+}
+
+/** Список сотрудников для ручной рассылки: номер, ближайшая вахта, текст по шаблону */
+export function smsRecipients() {
+  const s = smsSettings();
+  const today = todayIso();
+  const objs = storage.objects();
+  const allShifts = storage.shifts();
+  const log = storage.smsLog();
+
+  return storage.employees().map((e: any) => {
+    const shift = allShifts
+      .filter((sh: any) => sh.employeeId === e.id && sh.endDate >= today)
+      .sort((a: any, b: any) => a.startDate.localeCompare(b.startDate))[0];
+    const object = shift
+      ? objs.find((o: any) => o.id === shift.objectId)?.name ?? ""
+      : objs.find((o: any) => o.id === e.objectId)?.name ?? "";
+    const last = log
+      .filter((l: any) => l.employeeId === e.id && l.status === "sent")
+      .sort((a: any, b: any) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+    const daysLeft = shift
+      ? Math.round((new Date(shift.startDate + "T00:00:00Z").getTime() - new Date(today + "T00:00:00Z").getTime()) / 86400000)
+      : 0;
+    const text = renderTemplate(s.template, {
+      фио: e.fio ?? "", дата: ruDate(shift?.startDate ?? ""), участок: object,
+      должность: e.position ?? "", дней: String(daysLeft), контакт: s.contact,
+      выезд: ruDate(shift?.endDate ?? ""),
+    });
+    return {
+      employeeId: e.id, fio: e.fio, position: e.position, objectId: e.objectId, object,
+      phone: e.phone ?? "", phoneOk: !!normalizePhone(e.phone ?? ""),
+      shiftStart: shift?.startDate ?? "", shiftEnd: shift?.endDate ?? "",
+      daysLeft: shift ? daysLeft : null,
+      lastSentAt: last ? String(last.createdAt) : "",
+      text, parts: smsParts(text),
+    };
+  }).sort((a: any, b: any) => String(a.fio).localeCompare(String(b.fio), "ru"));
+}
+
+/**
  * Ежедневная автоотправка. Проверка раз в 15 минут: если включено, час наступил
  * и сегодня ещё не отправляли — вызвать всех, у кого подходит заезд.
  */

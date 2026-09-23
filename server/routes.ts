@@ -8,6 +8,7 @@ import { employeeTimesheet, allEmployeesTimesheet } from "./hr";
 import { calendarYear, calendarSummary, generateYear, resetCalendarCache, workDayMap } from "./calendar";
 import {
   publicSmsSettings, saveSmsSettings, smsSettings, smsBalance, pendingCallouts, runCallouts, sendSms,
+  sendToEmployees, smsRecipients, sendToPhones,
 } from "./sms";
 import { buildWorkbook, buildSummaryWorkbook, type SheetKey } from "./excel";
 import {
@@ -874,6 +875,38 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const days = req.query.days !== undefined ? Number(req.query.days) : undefined;
       res.json({ rows: pendingCallouts(days), settings: publicSmsSettings() });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Список сотрудников для выборочной рассылки */
+  app.get("/api/sms/recipients", (req, res) => {
+    try { res.json({ rows: smsRecipients() }); } catch (e) { fail(res, e); }
+  });
+
+  /** Отправка выбранным сотрудникам: свой текст или шаблон */
+  app.post("/api/sms/send-to", async (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.employeeIds) ? req.body.employeeIds.map(Number).filter(Boolean) : [];
+      const extra: string[] = Array.isArray(req.body?.extraPhones)
+        ? req.body.extraPhones.map((p: any) => String(p).trim()).filter(Boolean)
+        : String(req.body?.extraPhones ?? "").split(/[,;\n]/).map((p) => p.trim()).filter(Boolean);
+      if (!ids.length && !extra.length) throw new Error("Не выбран ни один сотрудник и не введён номер");
+      const text = req.body?.text !== undefined ? String(req.body.text) : undefined;
+      const phones = (req.body?.phones && typeof req.body.phones === "object") ? req.body.phones : undefined;
+      const savePhones = !!req.body?.savePhones;
+
+      const out = ids.length
+        ? await sendToEmployees(ids, text, phones, savePhones)
+        : { sent: 0, failed: 0, results: [] as any[] };
+      if (extra.length) {
+        const plain = await sendToPhones(extra, String(text ?? smsSettings().template));
+        out.sent += plain.sent;
+        out.failed += plain.failed;
+        out.results = [...out.results, ...plain.results.map((r: any) => ({ ...r, fio: "номер вручную" }))];
+      }
+      audit(req, "Отправка СМС выбранным", "sms",
+        `выбрано ${ids.length + extra.length}, отправлено ${out.sent}, с ошибкой ${out.failed}`);
+      res.json(out);
     } catch (e) { fail(res, e); }
   });
 
