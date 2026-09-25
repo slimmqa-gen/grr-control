@@ -307,11 +307,28 @@ export function eventsOverviewText() {
 }
 
 /** Сообщение с кнопками для руководителя */
-async function sendMaxMenu(chatId: string, text: string, buttons: { text: string; payload: string }[][]) {
+async function sendMaxMenu(
+  chatId: string, text: string, buttons: { text: string; payload: string }[][], format?: "html" | "markdown",
+) {
+  // длинный текст режем по строкам, кнопки — к последней части
+  const parts: string[] = [];
+  let cur = "";
+  for (const line of text.split("\n")) {
+    if ((cur + "\n" + line).length > 3800 && cur) { parts.push(cur); cur = line; } else cur = cur ? `${cur}\n${line}` : line;
+  }
+  if (cur) parts.push(cur);
+  for (const part of parts.slice(0, -1)) {
+    await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
+      method: "POST", body: JSON.stringify({ text: part, ...(format ? { format } : {}) }),
+    });
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  text = parts[parts.length - 1] ?? text;
   await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
     method: "POST",
     body: JSON.stringify({
       text,
+      ...(format ? { format } : {}),
       attachments: buttons.length
         ? [{
           type: "inline_keyboard",
@@ -329,6 +346,7 @@ async function sendStatusMenu(chatId: string) {
   const ev = eventsOverviewText();
   const text = [callout, "", ev.text].join("\n");
   const rows: { text: string; payload: string }[][] = [
+    [{ text: "Кто где сейчас", payload: "st:crew" }],
     [{ text: "Заезды подробно", payload: "st:callout" }, { text: "Обновить", payload: "st:menu" }],
   ];
   for (const id of ev.ids.slice(0, 8)) {
@@ -336,6 +354,22 @@ async function sendStatusMenu(chatId: string) {
     rows.push([{ text: String(e?.title || e?.text || `Событие ${id}`).slice(0, 40), payload: `st:ev:${id}` }]);
   }
   await sendMaxMenu(chatId, text, rows);
+}
+
+/** «Кто где»: итог по группам с кнопками или одна группа подробно */
+async function sendCrew(chatId: string, group?: string) {
+  const { crewOverviewText, crewGroupText, GROUPS } = await import("./crewstatus");
+  if (group && GROUPS.some((g) => g.key === group)) {
+    await sendMaxMenu(chatId, crewGroupText(group as any), [
+      [{ text: "Назад: кто где", payload: "st:crew" }, { text: "Статус", payload: "st:menu" }],
+    ], "html");
+    return;
+  }
+  const o = crewOverviewText();
+  // по две кнопки в ряд — компактнее
+  const rows: { text: string; payload: string }[][] = [];
+  for (let i = 0; i < o.buttons.length; i += 2) rows.push(o.buttons.slice(i, i + 2));
+  await sendMaxMenu(chatId, o.text, rows, "html");
 }
 
 /** Руководитель ли это: только им доступны статус и итоги */
@@ -410,7 +444,9 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
         return { linked, replies };
       }
       try {
-        if (parts[1] === "callout") {
+        if (parts[1] === "crew") {
+          await sendCrew(chatId, parts[2]);
+        } else if (parts[1] === "callout") {
           const { calloutDigestText } = await import("./sms");
           await sendMaxMenu(chatId, calloutDigestText(), [[{ text: "Назад к статусу", payload: "st:menu" }]]);
         } else if (parts[1] === "ev") {
@@ -673,6 +709,19 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
       }
     } else if (chatId) {
       await sendMax(chatId, "Производственная сводка вам недоступна. Если она нужна — обратитесь к руководителю.");
+    }
+    return { linked, replies };
+  }
+  // кто где: на вахте, в командировке, на межвахте — только ответственным
+  if (/^(кто где|ктогде|состав|люди сейчас|вахта сейчас|командировки)$/.test(cmd)) {
+    if (isResponsible(chatId)) {
+      try {
+        await sendCrew(chatId, cmd === "командировки" ? "trip" : undefined);
+      } catch (e) {
+        await sendMax(chatId, `Не удалось собрать: ${String((e as Error)?.message ?? e)}`);
+      }
+    } else if (chatId) {
+      await sendMax(chatId, "Эта информация доступна только руководителям.");
     }
     return { linked, replies };
   }

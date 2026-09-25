@@ -280,6 +280,46 @@ export default function Crew() {
     };
   }, [absenceAll]);
 
+  // ---------- Командировки: назначение одному или нескольким ----------
+  const [tripDialog, setTripDialog] = useState<{ open: boolean; ids: number[] }>({ open: false, ids: [] });
+  const [tripForm, setTripForm] = useState({ startDate: todayIso(), endDate: todayIso(), objectId: "", place: "", note: "" });
+  const [tripError, setTripError] = useState("");
+  /** Куда и до какого числа уехал сотрудник, если он сейчас в командировке */
+  const tripInfo = (empId: number) => {
+    const ev = empAllEvents.find((x: any) => x.employeeId === empId && x.kind === "trip" && x.startDate <= today && x.endDate >= today);
+    if (!ev) return "";
+    const place = ev.destinationObjectId ? objName(ev.destinationObjectId) : ev.destination;
+    const until = ev.endDate && ev.endDate !== "9999-12-31" ? ` до ${ev.endDate.slice(8, 10)}.${ev.endDate.slice(5, 7)}` : "";
+    return `${place || "место не указано"}${until}`;
+  };
+  const openTrip = (ids: number[]) => {
+    setTripError("");
+    setTripForm({ startDate: todayIso(), endDate: todayIso(), objectId: "", place: "", note: "" });
+    setTripDialog({ open: true, ids });
+  };
+  const saveTrip = useMutation({
+    mutationFn: async () => {
+      const byRef = tripForm.objectId !== OTHER_PLACE;
+      return (await apiRequest("POST", "/api/employee-events/bulk", {
+        employeeIds: tripDialog.ids, kind: "trip",
+        startDate: tripForm.startDate, endDate: tripForm.endDate,
+        destinationObjectId: byRef ? Number(tripForm.objectId) || 0 : 0,
+        destination: byRef ? "" : tripForm.place.trim(),
+        note: tripForm.note.trim(),
+      })).json();
+    },
+    onSuccess: (out: any) => {
+      queryClient.invalidateQueries();
+      setTripDialog({ open: false, ids: [] });
+      setSelected([]);
+      toast({
+        title: `Командировка назначена: ${out.created} чел.`,
+        description: out.warnings?.length ? out.warnings.slice(0, 3).join("; ") : undefined,
+      });
+    },
+    onError: (e: any) => setTripError(String(e?.message ?? e)),
+  });
+
   const saveAbsence = useMutation({
     mutationFn: async () => {
       const byRef = absForm.kind === "trip" && absForm.destinationObjectId !== OTHER_PLACE;
@@ -1465,6 +1505,10 @@ export default function Crew() {
                 <CalendarPlus className="mr-2 h-4 w-4" />
                 Назначить вахту
               </Button>
+              <Button size="sm" variant="outline" onClick={() => openTrip(selected)} data-testid="button-bulk-trip">
+                <Briefcase className="mr-2 h-4 w-4" />
+                Назначить командировку
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -1568,7 +1612,9 @@ export default function Crew() {
                         <td className="py-2 pr-3">
                           <Select
                             value={e.manualStatus || "auto"}
-                            onValueChange={(v) => updateManualStatus.mutate({ id: e.id, manualStatus: v === "auto" ? "" : v })}
+                            onValueChange={(v) => (v === "trip"
+                              ? openTrip([e.id])
+                              : updateManualStatus.mutate({ id: e.id, manualStatus: v === "auto" ? "" : v }))}
                           >
                             <SelectTrigger
                               className={cn(
@@ -1588,6 +1634,11 @@ export default function Crew() {
                               <SelectItem value="between">На межвахте</SelectItem>
                             </SelectContent>
                           </Select>
+                          {e.status === "trip" && (
+                            <div className="mt-0.5 text-[11px] text-muted-foreground" data-testid={`text-trip-${e.id}`}>
+                              {tripInfo(e.id)}
+                            </div>
+                          )}
                         </td>
                         <td className="py-2">
                           <div className="flex justify-end gap-1">
@@ -1599,6 +1650,15 @@ export default function Crew() {
                             >
                               <CalendarPlus className="mr-1 h-3.5 w-3.5" />
                               Назначить вахту
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openTrip([e.id])}
+                              title="Назначить командировку"
+                              data-testid={`button-assign-trip-${e.id}`}
+                            >
+                              <Briefcase className="h-3.5 w-3.5" />
                             </Button>
                             <Button
                               variant="ghost"
@@ -2948,7 +3008,7 @@ export default function Crew() {
                     </div>
                   </div>
                   <div className="mt-2 rounded-md bg-muted p-2 text-xs text-muted-foreground">
-                    Ответственным доступно из MAX: команда «статус» — заезды и открытые события с кнопками подробностей, «заезды» и «события» — сразу нужный список; оповещения об отказах и сообщениях,
+                    Ответственным доступно из MAX: команда «статус» — заезды и открытые события с кнопками подробностей, «кто где» — кто на вахте, в командировке, на межвахте и в отпуске, «командировки» — только командированные, «заезды» и «события» — сразу нужный список; оповещения об отказах и сообщениях,
                     а также кнопка «Ответить» под оповещением — нажал, написал сообщение, оно ушло сотруднику.
                     Чтобы человек попал в этот список, он должен быть в справочнике сотрудников и открыть свою
                     персональную ссылку из таблицы ниже.
@@ -4142,6 +4202,78 @@ export default function Crew() {
               data-testid="button-confirm-delete"
             >
               Удалить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------- Назначение командировки ---------- */}
+      <Dialog open={tripDialog.open} onOpenChange={(v) => setTripDialog({ open: v, ids: v ? tripDialog.ids : [] })}>
+        <DialogContent className="max-w-lg" data-testid="dialog-trip">
+          <DialogHeader>
+            <DialogTitle>Назначить командировку</DialogTitle>
+            <DialogDescription>
+              {tripDialog.ids.length === 1
+                ? empFio(tripDialog.ids[0])
+                : `Сотрудников: ${nf(tripDialog.ids.length)} — ${tripDialog.ids.slice(0, 4).map(empFio).join(", ")}${tripDialog.ids.length > 4 ? " и другие" : ""}`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Куда</label>
+              <Select value={tripForm.objectId} onValueChange={(v) => setTripForm({ ...tripForm, objectId: v })}>
+                <SelectTrigger data-testid="select-trip-object"><SelectValue placeholder="Выберите участок" /></SelectTrigger>
+                <SelectContent>
+                  {objects.map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>)}
+                  <SelectItem value={OTHER_PLACE}>Другое место…</SelectItem>
+                </SelectContent>
+              </Select>
+              {tripForm.objectId === OTHER_PLACE && (
+                <Input
+                  className="mt-2" value={tripForm.place}
+                  onChange={(e) => setTripForm({ ...tripForm, place: e.target.value })}
+                  placeholder="Например: Красноярск, база снабжения" data-testid="input-trip-place"
+                />
+              )}
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Выезд</label>
+                <Input type="date" value={tripForm.startDate}
+                  onChange={(e) => setTripForm({ ...tripForm, startDate: e.target.value })} data-testid="input-trip-start" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Возвращение</label>
+                <Input type="date" value={tripForm.endDate}
+                  onChange={(e) => setTripForm({ ...tripForm, endDate: e.target.value })} data-testid="input-trip-end" />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Цель или примечание (необязательно)</label>
+              <Input value={tripForm.note} onChange={(e) => setTripForm({ ...tripForm, note: e.target.value })}
+                placeholder="Например: монтаж станка, приёмка керна" data-testid="input-trip-note" />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              На время командировки статус будет «Командировка». Запись появится во вкладке «Отсутствия»,
+              там её можно изменить или завершить раньше.
+            </p>
+            {tripError && <ErrorBox text={tripError} />}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTripDialog({ open: false, ids: [] })} data-testid="button-cancel-trip">Отмена</Button>
+            <Button
+              onClick={() => {
+                setTripError("");
+                if (!tripForm.objectId) return setTripError("Выберите, куда направлен сотрудник.");
+                if (tripForm.objectId === OTHER_PLACE && !tripForm.place.trim()) return setTripError("Укажите место командировки.");
+                if (!tripForm.startDate || !tripForm.endDate) return setTripError("Укажите даты выезда и возвращения.");
+                if (tripForm.endDate < tripForm.startDate) return setTripError("Дата возвращения раньше даты выезда.");
+                saveTrip.mutate();
+              }}
+              disabled={saveTrip.isPending}
+              data-testid="button-save-trip"
+            >
+              Назначить
             </Button>
           </DialogFooter>
         </DialogContent>

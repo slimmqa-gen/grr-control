@@ -776,6 +776,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   };
 
   app.get("/api/employee-events", (_req, res) => res.json(storage.employeeEvents()));
+  /** Назначить командировку (или другое отсутствие) сразу нескольким сотрудникам */
+  app.post("/api/employee-events/bulk", (req, res) => {
+    try {
+      const b = req.body ?? {};
+      const ids: number[] = Array.isArray(b.employeeIds) ? b.employeeIds.map(Number).filter(Boolean) : [];
+      if (!ids.length) throw new Error("Не выбраны сотрудники");
+      const all = storage.employeeEvents();
+      const created: any[] = [];
+      const warnings: string[] = [];
+      for (const id of ids) {
+        const v = insertEmployeeEventSchema.parse({ ...b, employeeId: id });
+        const fio = storage.employees().find((e: any) => e.id === id)?.fio ?? `#${id}`;
+        const clash = all.find((ev: any) => ev.employeeId === id && ev.startDate <= v.endDate && ev.endDate >= v.startDate);
+        if (clash) warnings.push(`${fio}: пересекается с другой записью (${clash.startDate} — ${clash.endDate})`);
+        created.push(storage.createEmployeeEvent({ ...v, createdAt: new Date().toISOString() }));
+        syncEmployeeStatusFromEvents(id);
+      }
+      audit(req, "Назначение отсутствия нескольким", "employee-events", `${b.kind}: ${ids.length} чел., ${b.startDate}—${b.endDate}`);
+      res.json({ created: created.length, warnings });
+    } catch (e) { fail(res, e); }
+  });
+
   app.post("/api/employee-events", (req, res) => {
     try {
       const v = insertEmployeeEventSchema.parse(req.body);
