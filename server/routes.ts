@@ -47,6 +47,7 @@ import { smartUpload, smartPreview, smartCommit, headersOf, signatureOf } from "
 import { buildEstimateAnalytics } from "./estimates";
 import { seedEstimates } from "./seedEstimates";
 import { registerPbkRoutes } from "./pbkroutes";
+import { employeeStateOn } from "@shared/status";
 import { registerSectionRoutes } from "./sections";
 import { resetConfig } from "./sectionsconfig";
 import { ensurePbkLoaded } from "./pbkload";
@@ -82,8 +83,30 @@ async function sendWorkbook(res: Response, wb: any, fileName: string) {
   res.end(Buffer.from(buf));
 }
 
+/**
+ * Разовая правка: у вахтовиков, заведённых до появления «метода работы»,
+ * остался метод по умолчанию «Работа в офисе». Из-за этого они выпадали
+ * из «На межвахте». Всем, у кого есть вахты, ставим вахтовый метод — один раз.
+ */
+function migrateWorkStatusOnce() {
+  if (storage.getSetting("migr_workstatus_v1")) return;
+  const withShifts = new Set(storage.shifts().map((s: any) => s.employeeId));
+  const fixed: string[] = [];
+  for (const e of storage.employees() as any[]) {
+    if ((e.workStatus || "office") === "office" && withShifts.has(e.id)) {
+      storage.updateEmployee(e.id, { workStatus: "between" });
+      fixed.push(e.fio);
+    }
+  }
+  storage.setSetting("migr_workstatus_v1", new Date().toISOString());
+  if (fixed.length) {
+    console.log(`[Сотрудники] Вахтовый метод поставлен ${fixed.length} сотрудникам с вахтами: ${fixed.slice(0, 20).join(", ")}${fixed.length > 20 ? " и другие" : ""}`);
+  }
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   seedEstimates();
+  migrateWorkStatusOnce();
   // ВАЖНО: installAuth должен подключаться до registerPbkRoutes, иначе маршруты
   // /api/pbk/* (расценки, себестоимость, выручка) окажутся зарегистрированы раньше
   // app.use(guard) и будут отвечать без какой-либо проверки авторизации.
@@ -578,7 +601,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const today = new Date().toISOString().slice(0, 10);
     const events = storage.employeeEvents();
     const list = storage.employees().map((e: any) => {
-      if (!e.manualStatus) return e;
+      // «На межвахте» — не отсутствие, в журнале отсутствий его нет, сверять нечего
+      if (!e.manualStatus || e.manualStatus === "between") return e;
       const own = events.filter((ev) => ev.employeeId === e.id);
       if (!own.length) return e; // старые записи без событий оставляем как есть
       const covering = own.find((ev) => ev.startDate <= today && ev.endDate >= today);
@@ -595,7 +619,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.patch("/api/employees/:id", (req, res) => {
     try {
-      const body = insertEmployeeSchema.partial().parse(req.body);
+      const body: any = insertEmployeeSchema.partial().parse(req.body);
+      // отметка «На межвахте» бывает только у вахтовиков
+      if (body.manualStatus === "between") body.workStatus = "between";
       const updated = storage.updateEmployee(Number(req.params.id), body);
 
       // Синхронизация со вкладкой «Отсутствия»: смена статуса сотрудника
@@ -1319,12 +1345,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const prev = allShifts
           .filter((s: any) => s.employeeId === e.id && s.endDate < date)
           .sort((a: any, b: any) => b.endDate.localeCompare(a.endDate))[0];
-        let state = "unassigned";
-        if (event && event.kind !== "office" && event.kind !== "pp") state = event.kind;
-        else if (shift) state = "onshift";
-        else if (e.workStatus === "between") state = prev ? "between" : "unassigned";
-        else if (e.workStatus === "office" || e.workStatus === "pp")
+        const common = employeeStateOn(
+          date, e,
+          allShifts.filter((s: any) => s.employeeId === e.id),
+          events.filter((ev: any) => ev.employeeId === e.id),
+        );
+        // срез показывает офис и ПП с учётом календаря: рабочий день или выходной
+        let state: string = common === "none" ? "unassigned" : common;
+        if (common === "office" || common === "pp") {
           state = dayKind === "weekend" || dayKind === "holiday" ? "dayoff" : "work";
+        }
         return {
           employeeId: e.id, fio: e.fio, position: e.position,
           workStatus: e.workStatus, state,

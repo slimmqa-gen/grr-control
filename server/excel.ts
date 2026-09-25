@@ -1,3 +1,8 @@
+import { employeeStateOn, type EmployeeState } from "@shared/status";
+const STATE_TEXT: Record<EmployeeState, string> = {
+  onshift: "на вахте", between: "на межвахте", none: "вахта не назначена", office: "работа в офисе", pp: "работа на ПП",
+  vacation: "отпуск", sick: "больничный", trip: "командировка", study: "обучение",
+};
 import ExcelJS from "exceljs";
 import { storage } from "./storage";
 import { buildAnalytics, ruDate, monthTitle } from "./analytics";
@@ -184,14 +189,11 @@ export async function buildWorkbook(sheets: SheetKey[]): Promise<ExcelJS.Workboo
     {
       const today = new Date().toISOString().slice(0, 10);
       const allShifts = storage.shifts();
+      const allEvents = storage.employeeEvents();
       storage.employees().forEach((e) => {
         const own = allShifts.filter((s2) => s2.employeeId === e.id);
-        const method = (e as any).workStatus || "office";
-        const st = own.some((s2) => s2.startDate <= today && s2.endDate >= today)
-          ? "на вахте"
-          : method === "office" ? "работа в офисе"
-          : method === "pp" ? "работа на ПП"
-          : own.length === 0 ? "вахта не назначена" : "на межвахте";
+        const code = employeeStateOn(today, e as any, own, allEvents.filter((ev: any) => ev.employeeId === e.id));
+        const st = STATE_TEXT[code];
         ws3.addRow({ f: e.fio, p: e.position, o: objName(e.objectId) || "не указан", t: e.phone, st });
       });
     }

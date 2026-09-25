@@ -658,14 +658,15 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
   // 6. запрос сводки: доступен только тем, кому разрешена рассылка сводок
   const cmd = text.trim().toLowerCase().replace(/^\//, "");
   // производственная сводка: тем, кого отметили получателями сводки, и ответственным
-  if (/^(сводка|бурение|суточная|производство)$/.test(cmd)) {
-    const { dailySettings, dailySummary, summaryText } = await import("./daily");
+  if (/^(сводка|бурение|суточная|производство|люди|бурильщики|по людям)$/.test(cmd)) {
+    const { dailySettings, dailySummary, summaryText, workersText } = await import("./daily");
     const receivers = dailySettings().chatIds.split(",").map((x) => x.trim()).filter(Boolean);
     // только те, кого отметили получателями сводки: ответственные за вахты
     // и остальные сотрудники её не получают, даже если попросят
     if (chatId && receivers.includes(chatId)) {
       try {
-        const text = summaryText(dailySummary());
+        const people = /^(люди|бурильщики|по людям)$/.test(cmd);
+        const text = people ? workersText(dailySummary()) : summaryText(dailySummary());
         for (const part of text.match(/[\s\S]{1,3500}(?=\n|$)/g) ?? [text]) await sendMax(chatId, part.trim());
       } catch (e) {
         await sendMax(chatId, `Сводку собрать не удалось: ${String((e as Error)?.message ?? e)}`);

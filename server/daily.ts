@@ -277,9 +277,11 @@ export function summaryText(s: DailySummary): string {
       const remText = o.remaining > 0 ? `до плана ${fmt(o.remaining)} м` : `план выполнен, сверх ${fmt(-o.remaining)} м`;
       out.push(`Выполнено ${o.pct}% · ${remText} · ${lagText}`);
     }
-    for (const w of o.workers.filter((x) => x.onDay)) {
-      const tail = w.day === 0 && w.comment ? ` (${w.comment.slice(0, 60)})` : "";
-      out.push(`  • ${w.name}${w.rig ? `, ${w.rig}` : ""} — смена ${fmt(w.day)} м${tail}, месяц ${fmt(w.month)}, год ${fmt(w.year)}`);
+    // по людям — только кто сколько отбурил за смену; их итоги за месяц
+    // и год — отдельной командой «люди», чтобы не перегружать сводку
+    const onDay = o.workers.filter((x) => x.onDay);
+    if (onDay.length) {
+      out.push(`За смену: ${onDay.map((w) => `${w.name} ${fmt(w.day)} м${w.day === 0 && w.comment ? ` (${w.comment.slice(0, 40)})` : ""}`).join(", ")}`);
     }
   }
   out.push("");
@@ -295,6 +297,22 @@ export function summaryText(s: DailySummary): string {
   if (s.missing.length) {
     out.push("", `Нет сводки за сутки: ${s.missing.join(", ")}`);
   }
+  out.push("", "Итоги по людям за месяц и год — напишите боту «люди».");
+  return out.join("\n");
+}
+
+/** Статистика по бурильщикам: смена, месяц, год — отдельным сообщением */
+export function workersText(s: DailySummary): string {
+  const out: string[] = [`Бурильщики: итоги на ${ru(s.date)}`];
+  for (const o of s.objects) {
+    if (!o.workers.length) continue;
+    out.push("", `${o.object}`);
+    const list = [...o.workers].sort((a, b) => b.month - a.month);
+    for (const w of list) {
+      out.push(`• ${w.name}${w.rig ? ` (${w.rig})` : ""}: смена ${w.onDay ? `${fmt(w.day)} м` : "—"} · месяц ${fmt(w.month)} м · год ${fmt(w.year)} м`);
+    }
+  }
+  if (out.length === 1) out.push("", "Данных по бурильщикам нет.");
   return out.join("\n");
 }
 

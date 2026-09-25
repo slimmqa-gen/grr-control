@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { employeeStateOn } from "@shared/status";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet, Link2, Copy, RefreshCw, Settings, MessagesSquare, ClipboardList, ListChecks } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -232,21 +233,13 @@ export default function Crew() {
    * Статус на сегодня. Ручной статус действует только пока его подтверждает
    * запись об отсутствии, иначе завершённый больничный навсегда перекрывает вахту.
    */
-  const statusOf = (empId: number, manualStatus?: string, workStatus?: string): Status => {
-    const ownEvents = empAllEvents.filter((ev: any) => ev.employeeId === empId);
-    const covering = ownEvents.find((ev: any) => ev.startDate <= today && ev.endDate >= today);
-    if (covering && (MANUAL_STATUSES as string[]).includes(covering.kind)) return covering.kind as Status;
-    if (!ownEvents.length && manualStatus && (MANUAL_STATUSES as string[]).includes(manualStatus))
-      return manualStatus as Status;
-    const own = allShifts.filter((s) => s.employeeId === empId);
-    // разовая вахта у офисного сотрудника тоже показывается как «На вахте»
-    if (own.some((s) => s.startDate <= today && s.endDate >= today)) return "onshift";
-    // офис и ПП не работают вахтами: «Вахта не назначена» для них не имеет смысла
-    const method = workStatus || "office";
-    if (method === "office") return "office";
-    if (method === "pp") return "pp";
-    return own.length ? "between" : "none";
-  };
+  const statusOf = (empId: number, manualStatus?: string, workStatus?: string): Status =>
+    employeeStateOn(
+      today,
+      { manualStatus, workStatus },
+      allShifts.filter((s) => s.employeeId === empId),
+      empAllEvents.filter((ev: any) => ev.employeeId === empId),
+    ) as Status;
 
   const absenceAll = useMemo(() => {
     return empAllEvents

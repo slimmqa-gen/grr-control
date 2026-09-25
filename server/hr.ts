@@ -69,7 +69,11 @@ function stateOfDay(
     }
   }
   if (empShifts.some((s) => s.startDate <= day && s.endDate >= day)) return "onshift";
-  if (emp.workStatus === "between") return firstShiftStart && day >= firstShiftStart ? "between" : "unassigned";
+  if (emp.workStatus === "between") {
+    if (firstShiftStart && day >= firstShiftStart) return "between";
+    // межвахта, отмеченная вручную, действует с сегодняшнего дня
+    return emp.manualStatus === "between" && day >= new Date().toISOString().slice(0, 10) ? "between" : "unassigned";
+  }
   if (emp.workStatus === "office" || emp.workStatus === "pp") {
     // офис и пробоподготовка работают по производственному календарю;
     // работа в выходной отмечается отдельной записью вида «Офис» или «ПП»
