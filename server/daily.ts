@@ -306,6 +306,83 @@ export function summaryText(s: DailySummary): string {
   return out.join("\n");
 }
 
+/* ------------------ оформление для MAX (HTML) ------------------ */
+
+const esc = (t: string) => String(t ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const SEP = "━━━━━━━━━━━━━━";
+
+/** Цвет участка: 🟢 по графику, 🟡 небольшое отставание, 🔴 сильное, ⚪ нет сводки */
+function objMark(o: DailySummary["objects"][number]): string {
+  if (!o.reported) return o.lastDate || o.year ? "🟠" : "⚪";
+  if (!o.planMonth || !o.planToDate) return "🔵";
+  if (o.lag <= 0) return "🟢";
+  return o.lag / o.planToDate <= 0.15 ? "🟡" : "🔴";
+}
+
+/** Суточная сводка для MAX: участки отделены, названия выделены, цифры жирным */
+export function summaryHtml(s: DailySummary): string {
+  const out: string[] = [`📊 <b>Сводка ООО ПБК за ${ru(s.date)}</b>`, "", `<b>БУРЕНИЕ</b>`];
+  for (const o of s.objects) {
+    out.push(SEP);
+    const plan = o.planMonth ? ` · план ${fmt(o.planMonth)} м/мес` : "";
+    out.push(`${objMark(o)} <b>${esc(o.object.toUpperCase())}</b>${plan}`);
+    if (!o.reported && !o.lastDate && !o.year) { out.push("<i>сводка не поступает</i>"); continue; }
+    if (!o.reported) out.push(o.lastDate ? `⚠️ <i>за сутки не заполнена, последние данные ${ru(o.lastDate)}</i>` : "⚠️ <i>сводки нет</i>");
+    out.push(`Сутки: <b>${fmt(o.day)} м</b>`);
+    out.push(`Месяц: <b>${fmt(o.month)} м</b> · год: ${fmt(o.year)} м`);
+    if (o.planMonth) {
+      const rem = o.remaining > 0 ? `до плана ${fmt(o.remaining)} м` : `план выполнен, сверх ${fmt(-o.remaining)} м`;
+      const lag = o.lag > 0 ? `отставание <b>${fmt(o.lag)} м</b>` : `опережение ${fmt(-o.lag)} м`;
+      out.push(`${o.pct}% · ${rem} · ${lag}`);
+    }
+    const onDay = o.workers.filter((x) => x.onDay);
+    for (const w of onDay) {
+      out.push(`   • ${esc(w.name)} — ${fmt(w.day)} м${w.day === 0 && w.comment ? ` <i>(${esc(w.comment.slice(0, 40))})</i>` : ""}`);
+    }
+  }
+  out.push(SEP);
+  out.push(`🧮 <b>ИТОГО БУРЕНИЕ</b>`);
+  out.push(`Сутки: <b>${fmt(s.totals.day)} м</b> · месяц: <b>${fmt(s.totals.month)} м</b> · год: ${fmt(s.totals.year)} м`);
+  if (s.totals.planMonth) {
+    out.push(`План месяца ${fmt(s.totals.planMonth)} м · ${s.totals.lag > 0 ? `отставание <b>${fmt(s.totals.lag)} м</b>` : `опережение ${fmt(-s.totals.lag)} м`}`);
+  }
+  out.push("", SEP);
+  out.push(`${s.prep.reported ? "🟢" : "🟠"} <b>ПРОБОПОДГОТОВКА (ЦПП)</b>`);
+  if (!s.prep.reported) out.push(s.prep.lastDate ? `⚠️ <i>за сутки не заполнена, последние данные ${ru(s.prep.lastDate)}</i>` : "⚠️ <i>сводки нет</i>");
+  out.push(`Дробление: <b>${fmt(s.prep.day)}</b> за сутки · месяц ${fmt(s.prep.month)} · год ${fmt(s.prep.year)}`);
+  out.push(`Истирание: <b>${fmt(s.prep.milledDay)}</b> за сутки · месяц ${fmt(s.prep.milledMonth)} · год ${fmt(s.prep.milledYear)}`);
+  if (s.missing.length) out.push("", `⚠️ <b>Нет сводки за сутки:</b> ${s.missing.map(esc).join(", ")}`);
+  out.push("", "<i>🟢 по графику · 🟡 небольшое отставание · 🔴 сильное · 🟠 нет данных за сутки</i>");
+  out.push("<i>Итоги по людям — напишите боту «люди».</i>");
+  return out.join("\n");
+}
+
+/** Бурильщики для MAX */
+export function workersHtml(s: DailySummary): string {
+  const out: string[] = [`👷 <b>Бурильщики: итоги на ${ru(s.date)}</b>`];
+  let any = false;
+  for (const o of s.objects) {
+    if (!o.workers.length) continue;
+    any = true;
+    out.push(SEP, `${objMark(o)} <b>${esc(o.object.toUpperCase())}</b>`);
+    for (const w of [...o.workers].sort((a, b) => b.month - a.month)) {
+      out.push(`• <b>${esc(w.name)}</b>${w.rig ? ` (${esc(w.rig)})` : ""}`);
+      out.push(`   смена ${w.onDay ? `<b>${fmt(w.day)} м</b>` : "—"} · месяц ${fmt(w.month)} м · год ${fmt(w.year)} м`);
+    }
+  }
+  if (!any) out.push("", "Данных по бурильщикам нет.");
+  return out.join("\n");
+}
+
+/** Изменения для MAX */
+export function changesHtml(prev: DailySummary, next: DailySummary): string {
+  const plain = changesText(prev, next);
+  if (!plain) return "";
+  const lines = plain.split("\n").map(esc);
+  lines[0] = `🔄 <b>${lines[0]}</b>`;
+  return lines.map((l) => l.replace(/^• ([^:]+):/, "• <b>$1</b>:")).join("\n");
+}
+
 /** Статистика по бурильщикам: смена, месяц, год — отдельным сообщением */
 export function workersText(s: DailySummary): string {
   const out: string[] = [`Бурильщики: итоги на ${ru(s.date)}`];
@@ -434,14 +511,16 @@ export async function summaryWorkbook(s: DailySummary): Promise<Buffer> {
 function chunks(text: string, size = 3500): string[] {
   const out: string[] = [];
   let cur = "";
-  for (const line of text.split("\n")) {
+  // блоки участков не разрываем: режем перед разделителем
+  const blocks = text.split(`\n${SEP}`).map((b, i) => (i ? `${SEP}${b}` : b));
+  for (const line of blocks) {
     if ((cur + "\n" + line).length > size && cur) { out.push(cur); cur = line; } else cur = cur ? cur + "\n" + line : line;
   }
   if (cur) out.push(cur);
   return out;
 }
 
-export async function sendToRecipients(text: string, chatIds?: string[]) {
+export async function sendToRecipients(text: string, chatIds?: string[], format?: "html") {
   const { sendMax } = await import("./max");
   const ids = chatIds ?? dailySettings().chatIds.split(",").map((x) => x.trim()).filter(Boolean);
   let sent = 0;
@@ -449,7 +528,7 @@ export async function sendToRecipients(text: string, chatIds?: string[]) {
   for (const [i, id] of ids.entries()) {
     for (const [j, part] of chunks(text).entries()) {
       if (i > 0 || j > 0) await new Promise((r) => setTimeout(r, 600));
-      const res = await sendMax(id, part);
+      const res = await sendMax(id, part, 0, false, format);
       if (!res.ok) { errors.push(`${id}: ${res.response}`); break; }
       if (j === 0) sent++;
     }
@@ -461,7 +540,7 @@ export async function sendToRecipients(text: string, chatIds?: string[]) {
 export async function sendDailyNow(date = defaultReportDate(), chatIds?: string[]) {
   const s = dailySummary(date);
   const { row } = saveSnapshot(s, "отправка вручную");
-  const out = await sendToRecipients(summaryText(s), chatIds);
+  const out = await sendToRecipients(summaryHtml(s), chatIds, "html");
   if (out.sent) markSnapshotSent(row.id);
   return { ...out, snapshotId: row.id };
 }
@@ -499,7 +578,7 @@ export async function hourlyTick(force = false, mailNow = false, mailAgain = fal
     // него, а не ждёт следующего утра.
     const dueToday = now.hour >= st.sendFrom;
     if (dueToday && st.lastSentDate !== now.date) {
-      const out = await sendToRecipients(summaryText(s));
+      const out = await sendToRecipients(summaryHtml(s), undefined, "html");
       if (out.sent) {
         markSnapshotSent(row.id);
         saveDailySettings({ lastSentDate: now.date, lastSentHash: row.hash });
@@ -507,9 +586,9 @@ export async function hourlyTick(force = false, mailNow = false, mailAgain = fal
       }
     } else if (st.notifyChanges && st.lastSentDate === now.date && isNew && row.hash !== st.lastSentHash) {
       const prevData: DailySummary | null = prev ? JSON.parse(prev.data) : null;
-      const text = prevData ? changesText(prevData, s) : "";
+      const text = prevData ? changesHtml(prevData, s) : "";
       if (text) {
-        const out = await sendToRecipients(text);
+        const out = await sendToRecipients(text, undefined, "html");
         if (out.sent) {
           markSnapshotSent(row.id);
           saveDailySettings({ lastSentHash: row.hash });
