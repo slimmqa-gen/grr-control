@@ -129,6 +129,8 @@ export type ObjectRow = {
   pct: number;
   reported: boolean;
   lastDate: string;
+  /** из какого файла последние данные — чтобы видеть, если сводка не обновилась */
+  lastFile: string;
   workers: WorkerRow[];
 };
 
@@ -170,6 +172,9 @@ export function dailySummary(date = defaultReportDate()): DailySummary {
     const lastDate = String(one(
       `SELECT MAX(date) d FROM pbk_shifts WHERE object=? AND date<=? AND (meters>0 OR TRIM(comment)<>'')`, object, date,
     )?.d ?? "");
+    const lastFile = String(one(
+      `SELECT source_file f FROM pbk_shifts WHERE object=? AND (meters>0 OR TRIM(comment)<>'') ORDER BY date DESC LIMIT 1`, object,
+    )?.f ?? "");
 
     const ref = findObjectByName(refObjects, object);
     if (ref) usedRef.add(ref.id);
@@ -207,7 +212,7 @@ export function dailySummary(date = defaultReportDate()): DailySummary {
       remaining: r1(planMonth - month),
       lag: r1(planToDate - month),
       pct: planMonth ? Math.round((month / planMonth) * 100) : 0,
-      reported, lastDate, workers,
+      reported, lastDate, lastFile, workers,
     });
   }
 
@@ -221,7 +226,7 @@ export function dailySummary(date = defaultReportDate()): DailySummary {
       object: o.name, refName: o.name, planMonth,
       planDay: r1(planMonth / daysInMonth), planToDate: r1((planMonth / daysInMonth) * d),
       day: 0, month: 0, year: 0, remaining: planMonth, lag: r1((planMonth / daysInMonth) * d), pct: 0,
-      reported: false, lastDate: "", workers: [],
+      reported: false, lastDate: "", lastFile: "", workers: [],
     });
   }
   for (const o of objects) if (!o.reported && !missing.includes(o.object)) missing.push(o.object);

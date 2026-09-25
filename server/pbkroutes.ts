@@ -12,7 +12,7 @@ import {
   dailySummary, summaryText, defaultReportDate, dailySettings, saveDailySettings, saveSnapshot,
   snapshotList, snapshotById, summaryWorkbook, sendDailyNow, hourlyTick, localNow,
 } from "./daily";
-import { publicMailSettings, saveMailSettings, testMail, checkMail, mailLog, senderList } from "./mail";
+import { publicMailSettings, saveMailSettings, testMail, checkMail, mailLog, senderList, lastFilledDate } from "./mail";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const fail = (res: Response, e: any, code = 400) =>
@@ -107,7 +107,20 @@ export function registerPbkRoutes(app: Express) {
         try { ok = parseWorkbook(f.buffer, safeName).loaded > 0; } catch { ok = false; }
         if (!ok) { rejected.push({ file: safeName, reason: "не распознан как сводка бурения, геологии или ЦПП" }); continue; }
         const target = path.join(PBK_DIR, safeName);
-        if (fs.existsSync(target)) replaced.push(safeName);
+        if (fs.existsSync(target)) {
+          // не даём случайно заменить свежую сводку старой версией с тем же именем
+          let oldLast = "", newLast = "";
+          try { oldLast = lastFilledDate(parseWorkbook(fs.readFileSync(target), safeName)); } catch { /* пусть заменяется */ }
+          try { newLast = lastFilledDate(parseWorkbook(f.buffer, safeName)); } catch { /* уже проверено выше */ }
+          if (oldLast && newLast && newLast < oldLast) {
+            rejected.push({
+              file: safeName,
+              reason: `в программе уже есть более свежая версия (данные по ${oldLast.split("-").reverse().join(".")}), а в этом файле — по ${newLast.split("-").reverse().join(".")}. Переименуйте файл, если это другая сводка`,
+            });
+            continue;
+          }
+          replaced.push(safeName);
+        }
         fs.writeFileSync(target, f.buffer);
         accepted.push(safeName);
       }

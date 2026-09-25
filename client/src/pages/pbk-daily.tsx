@@ -302,7 +302,7 @@ export function DailyTab() {
 
 function FragmentRows({ o }: { o: any }) {
   const note = !o.reported
-    ? (o.lastDate ? `нет сводки за сутки · последние данные ${ru(o.lastDate)}` : "сводка не поступает")
+    ? (o.lastDate ? `нет сводки за сутки · последние данные ${ru(o.lastDate)}${o.lastFile ? ` (файл ${o.lastFile})` : ""}` : "сводка не поступает")
     : "";
   return (
     <>

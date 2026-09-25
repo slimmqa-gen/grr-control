@@ -109,6 +109,21 @@ function isAllowed(addr: string, allowed: string[]) {
 
 const isExcel = (name: string) => /\.xlsx?$/i.test(name) && !name.startsWith("~$");
 
+/** Последняя заполненная дата в сводке: по ней понятно, какая версия свежее */
+export function lastFilledDate(pr: { entities: Record<string, any[]> }): string {
+  let max = "";
+  for (const r of pr.entities.pbk_shifts ?? []) {
+    if ((Number(r.meters) > 0 || String(r.comment ?? "").trim()) && String(r.date) > max) max = String(r.date);
+  }
+  for (const r of pr.entities.pbk_prep ?? []) {
+    if ((Number(r.crushed) > 0 || Number(r.milled) > 0) && String(r.date) > max) max = String(r.date);
+  }
+  for (const r of pr.entities.pbk_geo ?? []) {
+    if (Number(r.length_m) > 0 && String(r.date) > max) max = String(r.date);
+  }
+  return max;
+}
+
 /** Проверка подключения без загрузки писем */
 export async function testMail() {
   const s = mailSettings();
@@ -214,9 +229,11 @@ export async function checkMail(): Promise<MailCheckResult> {
           }
           let parsedOk = false;
           let note = "";
+          let newLast = "";
           try {
             const pr = parseWorkbook(buf, name);
             parsedOk = pr.loaded > 0;
+            newLast = lastFilledDate(pr);
             note = parsedOk
               ? `распознано: ${pr.sheets.filter((x) => x.loaded).map((x) => `${x.sheet} (${x.profileName})`).join(", ")}`
               : "не похоже на сводку бурения или ЦПП";
@@ -228,7 +245,19 @@ export async function checkMail(): Promise<MailCheckResult> {
             logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, name, sha, "не принят", note);
             continue;
           }
-          fs.writeFileSync(path.join(FILES_DIR, name), buf);
+          // старое письмо не должно затирать более свежую сводку с тем же именем
+          const target = path.join(FILES_DIR, name);
+          if (fs.existsSync(target)) {
+            let oldLast = "";
+            try { oldLast = lastFilledDate(parseWorkbook(fs.readFileSync(target), name)); } catch { oldLast = ""; }
+            if (oldLast && newLast && newLast < oldLast) {
+              res.skipped++;
+              logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, name, sha, "устарела",
+                `в письме данные по ${newLast}, в программе уже есть по ${oldLast} — оставлена более свежая`);
+              continue;
+            }
+          }
+          fs.writeFileSync(target, buf);
           res.accepted++;
           logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, name, sha, "принят", note);
           res.details.push(`${name} от ${w.from}`);
