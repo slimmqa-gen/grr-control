@@ -394,18 +394,19 @@ export type MaxSettings = {
   /** дублировать такие оповещения СМС на телефоны ответственных */
   duplicateSms: boolean;
   /**
-   * Показывать текст личных сообщений сотрудников всем ответственным.
-   * Выключено: текст видит только тот, кто ведёт переписку с человеком;
-   * остальным — только уведомление без текста с кнопкой «Взять и прочитать».
+   * Кому в MAX приходят личные сообщения сотрудников (до 4 профилей).
+   * Назначает только директор. Остальные ответственные переписку не видят.
    */
-  shareMessages: boolean;
+  messageChatIds: string;
+  /** Кому из пользователей программы открыт раздел «Переписка» (id через запятую). Директору — всегда */
+  chatUserIds: string;
 };
 export const DEFAULT_MAX_SETTINGS: MaxSettings = {
   enabled: false, token: "", botName: "", marker: 0,
   mode: "poll", webhookUrl: "", webhookSecret: "", webhookAt: "", lastEventAt: "",
   reportEnabled: false, reportChatIds: "", reportHour: 18, reportLastDate: "",
   notifyDecline: true, notifyMessage: true, notifyConfirm: false, duplicateSms: false,
-  shareMessages: false,
+  messageChatIds: "", chatUserIds: "",
 };
 
 /** Журнал СМС-уведомлений: что, кому и когда отправлено */

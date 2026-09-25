@@ -31,28 +31,13 @@ export function saveMaxSettings(patch: Partial<MaxSettings>): MaxSettings {
   return next;
 }
 
-/* ------------ личная переписка: кто ведёт диалог с сотрудником ------------ */
+/* ------------ личная переписка: только назначенные директором ------------ */
 
-type Owner = { chatId: string; at: string };
-function owners(): Record<string, Owner> {
-  try { return JSON.parse(storage.getSetting("max_owners") || "{}"); } catch { return {}; }
+/** Профили MAX, которым директор открыл переписку с сотрудниками (не больше 4) */
+export function messageTargets(): string[] {
+  return String(maxSettings().messageChatIds ?? "").split(",").map((x) => x.trim()).filter(Boolean).slice(0, 4);
 }
-/** Кто из ответственных ведёт переписку с сотрудником (последние 30 дней) */
-export function dialogOwner(employeeId: number): string {
-  const o = owners()[String(employeeId)];
-  if (!o) return "";
-  const targets = String(maxSettings().reportChatIds ?? "").split(",").map((x) => x.trim());
-  if (!targets.includes(o.chatId)) return "";
-  if (Date.now() - new Date(o.at).getTime() > 30 * 86400000) return "";
-  return o.chatId;
-}
-export function setDialogOwner(employeeId: number, chatId: string) {
-  if (!employeeId) return;
-  const all = owners();
-  if (chatId) all[String(employeeId)] = { chatId, at: new Date().toISOString() };
-  else delete all[String(employeeId)];
-  storage.setSetting("max_owners", JSON.stringify(all));
-}
+const canChat = (chatId: string) => !!chatId && messageTargets().includes(chatId);
 
 /** Настройки для интерфейса: токен не отдаём, только признак «задан» */
 export function publicMaxSettings() {
@@ -593,14 +578,8 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
           });
         } catch { /* не критично */ }
       };
-      if (!row || !isResponsible(chatId)) { await answer("Недоступно"); return { linked, replies }; }
-      const owner = dialogOwner(row.employeeId);
-      if (owner && owner !== chatId) {
-        await answer("Переписку уже ведёт другой ответственный");
-        return { linked, replies };
-      }
-      setDialogOwner(row.employeeId, chatId);
-      await answer("Переписка закреплена за вами");
+      if (!row || !canChat(chatId)) { await answer("Переписка вам не открыта"); return { linked, replies }; }
+      await answer("Открываю");
       await sendMaxWithReply(chatId, `Сообщение от ${employeeName(row.employeeId, row.userName)}:\n${row.text}`, row.employeeId);
       return { linked, replies };
     }
@@ -608,11 +587,9 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     // ответственный нажал «Ответить» под оповещением
     if (action === "reply") {
       const target = shiftId;
-      const allowed = String(maxSettings().reportChatIds ?? "")
-        .split(",").map((x) => x.trim()).filter(Boolean);
-      if (link && target && allowed.includes(chatId)) {
+      // отвечать сотрудникам могут только те, кому директор открыл переписку
+      if (link && target && canChat(chatId)) {
         storage.updateNotifyLink(link.id, { replyTo: target });
-        setDialogOwner(target, chatId);
         const e = storage.employees().find((x: any) => x.id === target);
         if (callbackId) {
           try {
@@ -704,7 +681,10 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
   if (text && link && Number(link.replyTo) > 0) {
     const target = Number(link.replyTo);
     storage.updateNotifyLink(link.id, { replyTo: 0 });
-    setDialogOwner(target, chatId);
+    if (!canChat(chatId)) {
+      await sendMax(chatId, "Переписка с сотрудниками вам не открыта. Её открывает директор.");
+      return { linked, replies };
+    }
     try {
       await replyInMax(target, text);
       const e = storage.employees().find((x: any) => x.id === target);
@@ -1026,7 +1006,7 @@ export async function notifyResponsible(
     // поэтому пауза нужна только между отправками
     if (i > 0) await new Promise((resolve) => setTimeout(resolve, 600));
     try {
-      const r = replyEmployeeId
+      const r = replyEmployeeId && canChat(chatId)
         ? await sendMaxWithReply(chatId, text, replyEmployeeId)
         : await sendMax(chatId, text);
       if (r.ok) sent++;
@@ -1055,44 +1035,26 @@ export async function notifyResponsible(
  * кто ведёт переписку с человеком. Если такого нет — всем приходит
  * уведомление без текста; кто первым нажмёт «Взять и прочитать», тот и ведёт.
  */
-async function notifyPrivateMessage(employeeId: number, userName: string, text: string, fromChat: string, inboxId: number) {
+async function notifyPrivateMessage(employeeId: number, userName: string, text: string, fromChat: string, _inboxId: number) {
   const s = maxSettings();
   if (!s.notifyMessage) return;
   const who = employeeName(employeeId, userName);
-  if (s.shareMessages) {
-    await notifyResponsible(`Новое сообщение от ${who}: ${text}`, "message", fromChat, employeeId);
-    return;
-  }
-  const owner = employeeId ? dialogOwner(employeeId) : "";
-  if (owner && owner !== fromChat) {
-    await sendMaxWithReply(owner, `Новое сообщение от ${who}:\n${text}`, employeeId);
-    return;
-  }
-  const targets = String(s.reportChatIds ?? "").split(",").map((x) => x.trim()).filter((x) => x && x !== fromChat);
+  // только тем, кому директор открыл переписку; остальные ответственные её не видят
+  const targets = messageTargets().filter((x) => x !== fromChat);
   for (const [i, id] of targets.entries()) {
     if (i > 0) await new Promise((r) => setTimeout(r, 600));
-    try {
-      await maxRequest(`/messages?user_id=${encodeURIComponent(id)}`, {
-        method: "POST",
-        body: JSON.stringify({
-          text: `✉️ Новое личное сообщение от ${who}. Текст увидит тот, кто возьмёт переписку.`,
-          attachments: [{
-            type: "inline_keyboard",
-            payload: { buttons: [[{ type: "callback", text: "Взять и прочитать", payload: `open:${inboxId}`, intent: "positive" }]] },
-          }],
-        }),
-      });
-    } catch { /* следующему */ }
+    try { await sendMaxWithReply(id, `✉️ <b>Сообщение от ${who}</b>\n${text.replace(/</g, "&lt;")}`, employeeId, "html"); } catch { /* следующему */ }
   }
 }
 
 /** Оповещение с кнопкой «Ответить», чтобы ответить сотруднику прямо из MAX */
-async function sendMaxWithReply(chatId: string, text: string, employeeId: number) {
+async function sendMaxWithReply(chatId: string, text: string, employeeId: number, format?: "html") {
   try {
     await maxRequest(`/messages?user_id=${encodeURIComponent(chatId)}`, {
       method: "POST",
       body: JSON.stringify({
         text,
+        ...(format ? { format } : {}),
         attachments: [{
           type: "inline_keyboard",
           payload: {

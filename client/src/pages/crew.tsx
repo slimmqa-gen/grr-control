@@ -21,6 +21,7 @@ import { useAnalytics, useList, useReference } from "@/lib/hooks";
 import { PageHeader, Section, Empty, Loading, ErrorBox, ExportButton, Kpi } from "@/components/shell";
 import { nf, ruDate, todayIso, downloadFile, levelBadge, levelText, type Level } from "@/lib/app";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/lib/auth";
 
 const NO_OBJECT = "0";
 
@@ -694,6 +695,9 @@ export default function Crew() {
   const maxSettings = useQuery<any>({ queryKey: ["/api/max/settings"], enabled: notifyTab });
   const maxInvites = useQuery<any>({ queryKey: ["/api/max/invites"], enabled: notifyTab });
   const [maxForm, setMaxForm] = useState<any>(null);
+  const { user: me } = useAuth();
+  const isDir = me?.role === "director";
+  const appUsers = useQuery<any>({ queryKey: ["/api/users"], enabled: isDir });
   const [maxToken, setMaxToken] = useState("");
   const [maxBot, setMaxBot] = useState("");
   const maxF = maxForm ?? (maxSettings.data ? { ...maxSettings.data } : null);
@@ -3076,18 +3080,72 @@ export default function Crew() {
                       />
                       Сообщать о каждом новом сообщении от сотрудника
                     </label>
-                    <label className="flex items-center gap-2 text-sm">
-                      <Checkbox
-                        checked={!!maxF.shareMessages}
-                        onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, shareMessages: v })}
-                        data-testid="check-share-messages"
-                      />
-                      Показывать текст личных сообщений всем ответственным
-                    </label>
-                    <div className="ml-6 text-xs text-muted-foreground">
-                      Выключено (рекомендуется): текст видит только тот, кто ведёт переписку с сотрудником.
-                      Остальным приходит уведомление без текста — кто первым нажмёт «Взять и прочитать», тот и ведёт переписку.
-                      В групповых чатах бот не отвечает и ничего не пересылает.
+                    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950" data-testid="box-chat-access">
+                      <div className="text-sm font-semibold">Кто видит личную переписку с сотрудниками</div>
+                      <div className="mb-2 text-xs text-muted-foreground">
+                        Открывает только директор. Без отметки никто из ответственных переписку не видит — ни в MAX, ни в программе.
+                        Отказы от заезда и их причины по-прежнему приходят всем ответственным. В групповых чатах бот не работает.
+                      </div>
+                      {(() => {
+                        const ids = String(maxF.messageChatIds ?? "").split(",").map((x: string) => x.trim()).filter(Boolean);
+                        const linked = (maxInvites.data?.rows ?? []).filter((r: any) => r.linked);
+                        return (
+                          <>
+                            <div className="mb-1 text-xs font-medium">
+                              В MAX — сообщения с текстом и кнопкой «Ответить» (не больше 4): выбрано {ids.length} из 4
+                            </div>
+                            <div className="mb-3 flex flex-wrap gap-2" data-testid="list-chat-max">
+                              {linked.length === 0 ? <span className="text-xs text-muted-foreground">Нет привязанных профилей</span> : linked.map((r: any) => {
+                                const on = ids.includes(String(r.chatId));
+                                return (
+                                  <label key={r.employeeId} className={cn("flex items-center gap-2 rounded-md border bg-background px-2 py-1 text-sm",
+                                    on && "border-emerald-500 bg-emerald-50 dark:bg-emerald-950", !isDir && "opacity-60")}
+                                    data-testid={`chat-max-${r.employeeId}`}>
+                                    <Checkbox
+                                      checked={on}
+                                      disabled={!isDir || (!on && ids.length >= 4)}
+                                      onCheckedChange={(v: boolean) => {
+                                        const next = v ? [...ids, String(r.chatId)] : ids.filter((x: string) => x !== String(r.chatId));
+                                        setMaxForm({ ...maxF, messageChatIds: next.join(",") });
+                                      }}
+                                    />
+                                    {r.fio}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </>
+                        );
+                      })()}
+                      {isDir ? (() => {
+                        const uids = String(maxF.chatUserIds ?? "").split(",").map((x: string) => x.trim()).filter(Boolean);
+                        const list = (appUsers.data?.rows ?? appUsers.data ?? []).filter((u: any) => u.role !== "director" && u.active !== 0);
+                        return (
+                          <>
+                            <div className="mb-1 text-xs font-medium">В программе — раздел «Переписка» (директору открыт всегда)</div>
+                            <div className="flex flex-wrap gap-2" data-testid="list-chat-users">
+                              {list.map((u: any) => {
+                                const on = uids.includes(String(u.id));
+                                return (
+                                  <label key={u.id} className={cn("flex items-center gap-2 rounded-md border bg-background px-2 py-1 text-sm",
+                                    on && "border-emerald-500 bg-emerald-50 dark:bg-emerald-950")} data-testid={`chat-user-${u.id}`}>
+                                    <Checkbox
+                                      checked={on}
+                                      onCheckedChange={(v: boolean) => {
+                                        const next = v ? [...uids, String(u.id)] : uids.filter((x: string) => x !== String(u.id));
+                                        setMaxForm({ ...maxF, chatUserIds: next.join(",") });
+                                      }}
+                                    />
+                                    {u.fio || u.login} <span className="text-xs text-muted-foreground">({u.login})</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </>
+                        );
+                      })() : (
+                        <div className="text-xs text-muted-foreground">Изменить может только директор.</div>
+                      )}
                     </div>
                     <label className="flex items-center gap-2 text-sm">
                       <Checkbox
@@ -3519,7 +3577,11 @@ export default function Crew() {
           >
             <div className="grid gap-3 lg:grid-cols-[280px_1fr]">
               <div className="max-h-[60vh] overflow-auto rounded-md border" data-testid="list-chats">
-                {(maxChats.data?.rows ?? []).length === 0 ? (
+                {maxChats.data?.locked ? (
+                  <div className="p-3 text-sm text-muted-foreground" data-testid="text-chat-locked">
+                    Переписка вам не открыта. Её открывает директор.
+                  </div>
+                ) : (maxChats.data?.rows ?? []).length === 0 ? (
                   <div className="p-3 text-sm text-muted-foreground">
                     Переписки пока нет. Она появится, как только сотрудник ответит боту.
                   </div>

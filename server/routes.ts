@@ -916,7 +916,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (b.notifyMessage !== undefined) patch.notifyMessage = !!b.notifyMessage;
       if (b.notifyConfirm !== undefined) patch.notifyConfirm = !!b.notifyConfirm;
       if (b.duplicateSms !== undefined) patch.duplicateSms = !!b.duplicateSms;
-      if (b.shareMessages !== undefined) patch.shareMessages = !!b.shareMessages;
+      // кому открыта переписка — решает только директор
+      const cur = maxSettings();
+      const norm = (v: any) => String(v ?? "").split(",").map((x) => x.trim()).filter(Boolean).join(",");
+      const changesChat = (b.messageChatIds !== undefined && norm(b.messageChatIds) !== norm(cur.messageChatIds))
+        || (b.chatUserIds !== undefined && norm(b.chatUserIds) !== norm(cur.chatUserIds));
+      if (changesChat) {
+        if (req.authUser?.role !== "director") return res.status(403).json({ error: "Открывать переписку может только директор" });
+        if (b.messageChatIds !== undefined) {
+          const ids = String(b.messageChatIds).split(",").map((x) => x.trim()).filter(Boolean);
+          if (ids.length > 4) return res.status(400).json({ error: "Переписку можно открыть не больше чем 4 ответственным" });
+          patch.messageChatIds = ids.join(",");
+        }
+        if (b.chatUserIds !== undefined) patch.chatUserIds = String(b.chatUserIds).split(",").map((x) => x.trim()).filter(Boolean).join(",");
+      }
       if (b.reportHour !== undefined) {
         patch.reportHour = Math.min(23, Math.max(0, Number(b.reportHour) || 0));
       }
@@ -1124,29 +1137,50 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e) { fail(res, e); }
   });
 
+  /** Кто видит переписку в программе: директор и те, кому он открыл */
+  const canSeeChat = (req: any) => {
+    const u = req.authUser;
+    if (!u) return false;
+    if (u.role === "director") return true;
+    return String(maxSettings().chatUserIds ?? "").split(",").map((x) => x.trim()).includes(String(u.id));
+  };
+  const chatLocked = { error: "Переписка вам не открыта. Её открывает директор." };
+
   /** Переписка: список диалогов */
-  app.get("/api/max/chats", (_req, res) => {
-    try { res.json({ rows: maxChats() }); } catch (e) { fail(res, e); }
+  app.get("/api/max/chats", (req, res) => {
+    try {
+      if (!canSeeChat(req)) return res.json({ rows: [], locked: true });
+      res.json({ rows: maxChats() });
+    } catch (e) { fail(res, e); }
   });
 
   /** Переписка с одним сотрудником */
   app.get("/api/max/chat/:employeeId", (req, res) => {
-    try { res.json(maxChat(Number(req.params.employeeId))); } catch (e) { fail(res, e); }
+    try {
+      if (!canSeeChat(req)) return res.status(403).json(chatLocked);
+      res.json(maxChat(Number(req.params.employeeId)));
+    } catch (e) { fail(res, e); }
   });
 
   /** Отметить переписку прочитанной */
   app.post("/api/max/chat/:employeeId/seen", (req, res) => {
+    if (!canSeeChat(req)) return res.status(403).json(chatLocked);
     try { res.json(markChatSeen(Number(req.params.employeeId))); } catch (e) { fail(res, e); }
   });
 
   /** Ответы сотрудников из MAX */
   app.get("/api/max/inbox", (req, res) => {
-    try { res.json({ rows: maxInboxRows() }); } catch (e) { fail(res, e); }
+    try {
+      // личные сообщения — только тем, кому открыта переписка; ответы по вахтам видят все
+      const rows = maxInboxRows();
+      res.json({ rows: canSeeChat(req) ? rows : rows.filter((r: any) => !["reply", "outgoing"].includes(String(r.kind))) });
+    } catch (e) { fail(res, e); }
   });
 
   /** Ответить сотруднику в MAX из программы */
   app.post("/api/max/reply", async (req, res) => {
     try {
+      if (!canSeeChat(req)) return res.status(403).json(chatLocked);
       const employeeId = Number(req.body?.employeeId);
       const text = String(req.body?.text ?? "").trim();
       if (!employeeId) throw new Error("Не выбран сотрудник");
