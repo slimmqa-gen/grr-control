@@ -177,7 +177,7 @@ export default function Crew() {
   // фильтр вкладки «Вахты»
   const [shiftObjectFilter, setShiftObjectFilter] = useState("all");
   const [shiftPeriod, setShiftPeriod] = useState<"current" | "planned" | "done" | "all">("current");
-  const [shiftFocus, setShiftFocus] = useState<"all" | "soon" | "noReplacement">("all");
+  const [shiftFocus, setShiftFocus] = useState<"all" | "soon" | "arrive" | "noReplacement">("all");
   const [absStateFilter, setAbsStateFilter] = useState<"all" | "active" | "endingSoon" | "upcoming" | "past">("all");
 
   const [selected, setSelected] = useState<number[]>([]);
@@ -861,6 +861,8 @@ export default function Crew() {
   if (error || !data) return <ErrorBox text="Не удалось загрузить данные по сотрудникам. Обновите страницу." />;
 
   const th = data.thresholds;
+  // заезд видно заранее: не меньше недели, чтобы успеть вызвать людей и купить билеты
+  const arriveDays = Math.max(7, Number(th.rotationEndDays) || 0);
   /**
    * Все вахты, а не только текущие: даты заезда и выезда должны быть доступны
    * для правки в любой момент — и до заезда, и после возвращения.
@@ -879,6 +881,7 @@ export default function Crew() {
         startDate: s.startDate, endDate: s.endDate, cycleType: s.cycleType,
         daysWorked: period === "planned" ? 0 : days(s.startDate, period === "done" ? s.endDate : today) + 1,
         daysLeft: days(today, s.endDate),
+        daysToStart: days(today, s.startDate),
         overtime: period !== "planned" && cycleDays > 0 && days(s.startDate, s.endDate) + 1 > cycleDays,
         replacementAssigned: s.replacementAssigned === 1,
         period,
@@ -888,8 +891,10 @@ export default function Crew() {
       (shiftObjectFilter === "all" || r.objectId === Number(shiftObjectFilter)) &&
       (shiftPeriod === "all" || r.period === shiftPeriod) &&
       (shiftFocus === "all" ||
-        (r.period === "current" && r.daysLeft <= th.rotationEndDays &&
-          (shiftFocus === "soon" || !r.replacementAssigned))))
+        (shiftFocus === "arrive"
+          ? r.daysToStart >= 0 && r.daysToStart <= arriveDays
+          : r.period === "current" && r.daysLeft <= th.rotationEndDays &&
+            (shiftFocus === "soon" || !r.replacementAssigned))))
     .sort((a, b) => (a.period === b.period ? a.endDate.localeCompare(b.endDate) : a.startDate < b.startDate ? 1 : -1));
 
   const rotation = shiftRows;
@@ -898,6 +903,20 @@ export default function Crew() {
   const dashSoonOut = shiftRows
     .filter((r) => r.period === "current" && r.daysLeft <= th.rotationEndDays)
     .sort((a, b) => a.daysLeft - b.daysLeft);
+  const dashSoonIn = allShifts
+    .filter((s: any) => {
+      const d = Math.round((new Date(s.startDate + "T00:00:00").getTime() - new Date(today + "T00:00:00").getTime()) / 86400000);
+      return d >= 0 && d <= arriveDays;
+    })
+    .map((s: any) => {
+      const e = emps.find((x: any) => x.id === s.employeeId);
+      return {
+        shiftId: s.id, employeeId: s.employeeId, fio: e?.fio ?? "—", position: e?.position ?? "—",
+        object: objName(s.objectId) || "не указан", startDate: s.startDate,
+        daysToStart: Math.round((new Date(s.startDate + "T00:00:00").getTime() - new Date(today + "T00:00:00").getTime()) / 86400000),
+      };
+    })
+    .sort((a: any, b: any) => a.daysToStart - b.daysToStart);
   const dashMed = rows
     .map((e: any) => ({ ...e, med: medExamInfo(e.medicalExamEndDate ?? "", today) }))
     .filter((e: any) => e.med.level !== "ok")
@@ -964,7 +983,7 @@ export default function Crew() {
     setStatusFilter(status);
     scrollToList("table-employees");
   };
-  const showShifts = (period: "current" | "planned" | "done" | "all", focus: "all" | "soon" | "noReplacement") => {
+  const showShifts = (period: "current" | "planned" | "done" | "all", focus: "all" | "soon" | "arrive" | "noReplacement") => {
     setTab("shifts");
     setShiftPeriod(period);
     setShiftFocus(focus);
@@ -1127,7 +1146,7 @@ export default function Crew() {
 
       {tab === "dash" && (
         <>
-          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-7">
             <Kpi
               testId="dash-kpi-total" label="Всего сотрудников" value={nf(counters.total)}
               onClick={() => showPeople("all")}
@@ -1150,6 +1169,11 @@ export default function Crew() {
               testId="dash-kpi-med" label="Медосмотр под вопросом" value={nf(dashMed.length)}
               level={dashMed.length === 0 ? "ok" : "bad"}
               onClick={() => { setTab("people"); setQ(""); setObjectFilter("all"); setPositionFilter("all"); setStatusFilter("all"); setMedFilter("soon"); scrollToList("table-employees"); }}
+            />
+            <Kpi
+              testId="dash-kpi-arrive" label="Скоро заезд на вахту" value={nf(dashSoonIn.length)}
+              hint={`В ближайшие ${nf(arriveDays)} дн.`}
+              onClick={() => showShifts("all", "arrive")}
             />
             <Kpi
               testId="dash-kpi-soon" label="Скоро выезд с вахты" value={nf(dashSoonOut.length)}
@@ -1181,6 +1205,35 @@ export default function Crew() {
                       sub={`${r.position} · ${r.object}`}
                       badge={r.daysLeft <= 0 ? "выезд сегодня" : `осталось ${nf(r.daysLeft)} дн.`}
                       level={r.daysLeft <= 1 ? "bad" : "warn"}
+                      onOpen={() => openEmployeeCard(r.employeeId)}
+                      onAnalytics={() => openAnalytics(r.employeeId)}
+                    />
+                  ))}
+                </div>
+              )}
+            </Section>
+
+            <Section
+              title="Скоро заезд на вахту"
+              description={`Заезд в ближайшие ${nf(arriveDays)} дн. Нажмите строку — откроется карточка`}
+              actions={dashSoonIn.length > 12 ? (
+                <Button variant="outline" size="sm" onClick={() => showShifts("all", "arrive")} data-testid="dash-all-arrive">
+                  Показать все ({nf(dashSoonIn.length)})
+                </Button>
+              ) : undefined}
+            >
+              {dashSoonIn.length === 0 ? (
+                <Empty text="В ближайшие дни заездов нет." />
+              ) : (
+                <div className="space-y-1" data-testid="dash-list-arrive">
+                  {dashSoonIn.slice(0, 12).map((r: any) => (
+                    <DashRow
+                      key={r.shiftId}
+                      testId={`dash-row-arrive-${r.shiftId}`}
+                      fio={r.fio}
+                      sub={`${r.position} · ${r.object} · ${String(r.startDate).slice(8, 10)}.${String(r.startDate).slice(5, 7)}`}
+                      badge={r.daysToStart <= 0 ? "заезд сегодня" : r.daysToStart === 1 ? "заезд завтра" : `через ${nf(r.daysToStart)} дн.`}
+                      level={r.daysToStart <= 1 ? "bad" : r.daysToStart <= 3 ? "warn" : "ok"}
                       onOpen={() => openEmployeeCard(r.employeeId)}
                       onAnalytics={() => openAnalytics(r.employeeId)}
                     />
@@ -1737,10 +1790,19 @@ export default function Crew() {
             </div>
             <div className="min-w-[200px]">
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Показывать</label>
-              <Select value={shiftFocus} onValueChange={(v) => setShiftFocus(v as any)}>
+              <Select
+                value={shiftFocus}
+                onValueChange={(v) => {
+                  setShiftFocus(v as any);
+                  // заезд смотрим по всем вахтам, выезд и замену — по текущим
+                  if (v === "arrive") setShiftPeriod("all");
+                  else if (v === "soon" || v === "noReplacement") setShiftPeriod("current");
+                }}
+              >
                 <SelectTrigger data-testid="filter-shift-focus"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Все вахты периода</SelectItem>
+                  <SelectItem value="arrive">Заезд в ближайшие дни</SelectItem>
                   <SelectItem value="soon">Выезд в ближайшие дни</SelectItem>
                   <SelectItem value="noReplacement">Без назначенной замены</SelectItem>
                 </SelectContent>
