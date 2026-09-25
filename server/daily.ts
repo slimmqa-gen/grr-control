@@ -376,6 +376,10 @@ export function snapshotById(id: number) {
   return { ...row, data: JSON.parse(row.data || "{}") as DailySummary };
 }
 
+export function deleteSnapshot(id: number) {
+  return pdb.prepare(`DELETE FROM daily_snapshots WHERE id=?`).run(id).changes;
+}
+
 export function markSnapshotSent(id: number) {
   pdb.prepare(`UPDATE daily_snapshots SET sent=1 WHERE id=?`).run(id);
 }
@@ -467,17 +471,18 @@ export async function sendDailyNow(date = defaultReportDate(), chatIds?: string[
  * В окне рассылки — отправить сводку за сутки. После утренней отправки —
  * сообщить об изменениях, если они появились.
  */
-export async function hourlyTick(force = false) {
+export async function hourlyTick(force = false, mailNow = false) {
   const st = dailySettings();
   const now = localNow(st.tz);
   const hourKey = `${now.date} ${now.hour}`;
-  if (!force && st.lastHourKey === hourKey) return { skipped: true };
+  const { checkMail, mailDue } = await import("./mail");
+  const wantMail = mailNow || mailDue();
+  if (!force && !wantMail && st.lastHourKey === hourKey) return { skipped: true };
   saveDailySettings({ lastHourKey: hourKey });
 
   let mail: any = null;
   try {
-    const { checkMail, mailSettings } = await import("./mail");
-    if (mailSettings().enabled) mail = await checkMail();
+    if (wantMail) mail = await checkMail();
   } catch (e) {
     mail = { error: String((e as Error)?.message ?? e) };
   }
@@ -489,8 +494,11 @@ export async function hourlyTick(force = false) {
   let sentMorning = false;
   let sentChanges = false;
   if (st.enabled && st.chatIds.trim()) {
-    const inWindow = now.hour >= st.sendFrom && now.hour < st.sendTo;
-    if (inWindow && st.lastSentDate !== now.date) {
+    // Окно рассылки — с sendFrom. Если окно пропущено (рассылку включили днём,
+    // сервер перезапускался утром), сводка уходит при первой проверке после
+    // него, а не ждёт следующего утра.
+    const dueToday = now.hour >= st.sendFrom;
+    if (dueToday && st.lastSentDate !== now.date) {
       const out = await sendToRecipients(summaryText(s));
       if (out.sent) {
         markSnapshotSent(row.id);

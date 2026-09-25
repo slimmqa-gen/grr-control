@@ -33,6 +33,20 @@ export function DailyTab() {
 
   const q = useQuery<any>({ queryKey: [`/api/pbk/daily${date ? `?date=${date}` : ""}`], refetchInterval: 60_000 });
   const mailQ = useQuery<any>({ queryKey: ["/api/pbk/mail/settings"], refetchInterval: 60_000 });
+  const mailNow = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/pbk/mail/check")).json(),
+    onSuccess: (d: any) => {
+      queryClient.invalidateQueries();
+      toast({
+        title: d.accepted ? `Взято новых сводок: ${d.accepted}` : "Новых сводок на почте нет",
+        description: d.accepted ? "Сводки обновлены, суточная пересчитана." : d.others?.length ? `Есть письма от адресов вне списка: ${d.others.map((o: any) => o.from).join(", ")}` : "Всё, что приходило раньше, уже в программе.",
+      });
+    },
+    onError: (e: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/pbk/mail/settings"] });
+      toast({ title: "Почту забрать не удалось", description: String(e?.message ?? e), variant: "destructive" });
+    },
+  });
   const srcQ = useQuery<any>({ queryKey: ["/api/pbk/sources"], refetchInterval: 60_000 });
   const archive = useQuery<any>({ queryKey: ["/api/pbk/daily/archive"] });
   const snap = useQuery<any>({ queryKey: [`/api/pbk/daily/archive/${viewId}`], enabled: viewId > 0 });
@@ -76,6 +90,18 @@ export function DailyTab() {
     },
   });
 
+  const [delId, setDelId] = useState(0);
+  const delSnap = useMutation({
+    mutationFn: async (id: number) => (await apiRequest("DELETE", `/api/pbk/daily/archive/${id}`)).json(),
+    onSuccess: (_d: any, id: number) => {
+      setDelId(0);
+      if (viewId === id) setViewId(0);
+      queryClient.invalidateQueries({ queryKey: ["/api/pbk/daily/archive"] });
+      toast({ title: "Редакция удалена из архива" });
+    },
+    onError: (e: any) => toast({ title: "Не удалено", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
   const runNow = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/pbk/daily/run", {})).json(),
     onSuccess: (d: any) => {
@@ -109,8 +135,21 @@ export function DailyTab() {
     <div className="space-y-4">
       {m && viewId === 0 && (
         <div className={`rounded-md border p-3 text-sm ${toneCls(mailState.tone)}`} data-testid="box-daily-status">
-          <div className="font-semibold">{mailState.title}</div>
-          <div className="text-xs">{mailState.text}</div>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="font-semibold">{mailState.title}</div>
+              <div className="text-xs">{mailState.text}</div>
+              {m.enabled && m.lastCheck && !m.lastError && (
+                <div className="text-xs opacity-80">
+                  Следующая автоматическая проверка ≈ {dt(new Date(new Date(m.lastCheck).getTime() + (m.intervalMin || 60) * 60_000).toISOString())}
+                </div>
+              )}
+            </div>
+            <Button size="sm" variant="outline" className="bg-background" onClick={() => mailNow.mutate()} disabled={mailNow.isPending} data-testid="button-daily-mail-now">
+              <RefreshCw className={`mr-1 h-4 w-4 ${mailNow.isPending ? "animate-spin" : ""}`} />
+              {mailNow.isPending ? "Забираю…" : "Забрать почту сейчас"}
+            </Button>
+          </div>
           {(m.others ?? []).length > 0 && (
             <div className="mt-1 text-xs">
               Есть письма со сводками от адресов вне списка: {(m.others ?? []).map((o: any) => o.from).join(", ")} — добавьте их на вкладке «Почта».
@@ -315,8 +354,19 @@ export function DailyTab() {
           {(archive.data?.rows ?? []).length === 0 ? <Empty text="Архив пока пуст." /> : (
             <div className="max-h-[360px] space-y-1 overflow-y-auto" data-testid="list-daily-archive">
               {(archive.data?.rows ?? []).map((r: any) => (
+                <div key={r.id} className="flex items-center gap-1">
+                {delId === r.id ? (
+                  <div className="flex w-full items-center justify-between gap-2 rounded-md border border-red-300 px-3 py-2 text-sm" data-testid={`archive-confirm-${r.id}`}>
+                    <span>Удалить редакцию {r.version} за {ru(r.report_date)}?</span>
+                    <span className="flex gap-1">
+                      <Button size="sm" variant="destructive" onClick={() => delSnap.mutate(r.id)} disabled={delSnap.isPending}
+                        data-testid={`button-archive-delete-yes-${r.id}`}>Удалить</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setDelId(0)}>Отмена</Button>
+                    </span>
+                  </div>
+                ) : (
+                <>
                 <button
-                  key={r.id}
                   type="button"
                   onClick={() => { setViewId(r.id); window.scrollTo({ top: 0, behavior: "smooth" }); }}
                   className={`flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/50 ${viewId === r.id ? "border-primary" : ""}`}
@@ -333,6 +383,13 @@ export function DailyTab() {
                     <span>{dt(r.created_at)}</span>
                   </span>
                 </button>
+                <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0" title="Удалить из архива"
+                  onClick={() => setDelId(r.id)} data-testid={`button-archive-delete-${r.id}`}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+                </>
+                )}
+                </div>
               ))}
             </div>
           )}
@@ -482,7 +539,7 @@ export function MailTab() {
           <div className="space-y-3 text-sm">
             <label className="flex items-center gap-3">
               <Switch checked={!!form.enabled} onCheckedChange={(v) => setForm({ ...form, enabled: v })} data-testid="switch-mail-enabled" />
-              Забирать сводки с почты каждый час
+              Забирать сводки с почты автоматически
             </label>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Адрес ящика</label>
@@ -511,6 +568,24 @@ export function MailTab() {
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">Папка</label>
                 <Input value={form.folder} onChange={(e) => setForm({ ...form, folder: e.target.value })} data-testid="input-mail-folder" />
+              </div>
+              <div className="col-span-2">
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Как часто забирать почту</label>
+                <select
+                  className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                  value={form.intervalMin ?? 60}
+                  onChange={(e) => setForm({ ...form, intervalMin: Number(e.target.value) })}
+                  data-testid="select-mail-interval"
+                >
+                  <option value={15}>каждые 15 минут</option>
+                  <option value={30}>каждые 30 минут</option>
+                  <option value={60}>каждый час</option>
+                  <option value={120}>каждые 2 часа</option>
+                </select>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Почта забирается весь день, не только утром. Рассылка в MAX — отдельно, в своё время.
+                  Забрать вручную — кнопкой «Забрать почту сейчас».
+                </div>
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">Смотреть письма за, дней</label>

@@ -11,9 +11,9 @@ import { pbkAnalytics, reclassifyShifts, rates, factRevenue, hangingRevenue } fr
 import { storage, restoreDemoData } from "./storage";
 import {
   dailySummary, summaryText, defaultReportDate, dailySettings, saveDailySettings, saveSnapshot,
-  snapshotList, snapshotById, summaryWorkbook, sendDailyNow, hourlyTick, localNow,
+  snapshotList, snapshotById, summaryWorkbook, sendDailyNow, hourlyTick, localNow, deleteSnapshot,
 } from "./daily";
-import { publicMailSettings, saveMailSettings, testMail, checkMail, mailLog, senderList, lastFilledDate, mailErrorText } from "./mail";
+import { publicMailSettings, saveMailSettings, testMail, mailLog, senderList, lastFilledDate, mailErrorText } from "./mail";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const fail = (res: Response, e: any, code = 400) =>
@@ -272,6 +272,15 @@ export function registerPbkRoutes(app: Express) {
     try { res.json({ rows: snapshotList() }); } catch (e) { fail(res, e); }
   });
 
+  app.delete("/api/pbk/daily/archive/:id", (req, res) => {
+    try {
+      if (!isDirector(req)) return res.status(403).json({ error: "Удалять из архива может директор" });
+      const n = deleteSnapshot(Number(req.params.id));
+      if (!n) return res.status(404).json({ error: "Редакция не найдена" });
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+
   app.get("/api/pbk/daily/archive/:id", (req, res) => {
     try {
       const row = snapshotById(Number(req.params.id));
@@ -321,9 +330,13 @@ export function registerPbkRoutes(app: Express) {
       const patch: any = {};
       if (b.enabled !== undefined) patch.enabled = !!b.enabled;
       for (const k of ["host", "user", "folder", "senders"]) if (b[k] !== undefined) patch[k] = String(b[k]).trim();
-      for (const k of ["port", "days"]) if (b[k] !== undefined) patch[k] = Number(b[k]);
+      for (const k of ["port", "days", "intervalMin"]) if (b[k] !== undefined) patch[k] = Number(b[k]);
       if (b.password) patch.password = String(b.password);
-      saveMailSettings(patch);
+      const saved = saveMailSettings(patch);
+      // сразу после сохранения — забрать почту в фоне, не дожидаясь часа
+      if (saved.enabled && saved.user && saved.password && senderList(saved.senders).length) {
+        hourlyTick(true, true).catch((e) => console.log(`[Почта] ${String(e?.message ?? e)}`));
+      }
       res.json({ ...publicMailSettings(), senderCount: senderList(publicMailSettings().senders).length });
     } catch (e) { fail(res, e); }
   });
@@ -342,7 +355,10 @@ export function registerPbkRoutes(app: Express) {
   app.post("/api/pbk/mail/check", async (req, res) => {
     try {
       if (!isDirector(req)) return res.status(403).json({ error: "Проверка почты — у директора" });
-      res.json(await checkMail());
+      // ручная проверка: забрать почту и сразу пересчитать суточную сводку
+      const out: any = await hourlyTick(true, true);
+      if (out.mail?.error) return res.status(400).json({ error: out.mail.error });
+      res.json({ ...(out.mail ?? {}), snapshot: out.snapshot, isNew: out.isNew });
     } catch (e) { fail(res, e); }
   });
 

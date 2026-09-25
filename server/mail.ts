@@ -50,6 +50,8 @@ export type MailSettings = {
   folder: string;
   /** за сколько последних дней смотреть письма */
   days: number;
+  /** как часто забирать почту автоматически, минут (15, 30, 60, 120) */
+  intervalMin: number;
   lastCheck: string;
   lastResult: string;
   /** ошибка последней проверки: пароль, связь, папка */
@@ -65,6 +67,7 @@ const DEFAULT_MAIL: MailSettings = {
   senders: "",
   folder: "INBOX",
   days: 3,
+  intervalMin: 60,
   lastCheck: "",
   lastResult: "",
   lastError: "",
@@ -91,6 +94,15 @@ export function saveMailSettings(patch: Partial<MailSettings>): MailSettings {
 }
 
 /** Для интерфейса: пароль не отдаём, только признак «задан» */
+/** Пора ли автоматически забирать почту */
+export function mailDue(): boolean {
+  const s = mailSettings();
+  if (!s.enabled) return false;
+  if (!s.lastCheck) return true;
+  const every = Math.max(10, Number(s.intervalMin) || 60) * 60_000;
+  return Date.now() - new Date(s.lastCheck).getTime() >= every - 30_000;
+}
+
 export function publicMailSettings() {
   const { password, ...rest } = mailSettings();
   let others: any[] = [];
