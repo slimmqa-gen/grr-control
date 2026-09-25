@@ -375,18 +375,53 @@ export function MailTab() {
     onSuccess: (d: any) => {
       queryClient.invalidateQueries();
       toast({
-        title: d.accepted ? `Принято файлов: ${d.accepted}` : "Новых сводок нет",
+        title: d.accepted ? `Принято файлов: ${d.accepted}` : d.others?.length ? "Новых сводок нет — есть письма от адресов вне списка" : "Новых сводок нет",
         description: `Писем за период ${d.scanned}, от ваших адресов новых ${d.fromAllowed}, не принято ${d.rejected}`,
       });
     },
-    onError: (e: any) => toast({ title: "Не получилось", description: String(e?.message ?? e), variant: "destructive" }),
+    onError: (e: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/pbk/mail/settings"] });
+      toast({ title: "Не получилось", description: String(e?.message ?? e), variant: "destructive" });
+    },
   });
 
+  const addSender = (addr: string) => {
+    const list = String(form.senders ?? "").split(/\n/).map((x: string) => x.trim()).filter(Boolean);
+    if (!list.includes(addr)) setForm({ ...form, senders: [...list, addr].join("\n") });
+    toast({ title: `Адрес ${addr} добавлен в список`, description: "Нажмите «Сохранить», затем «Забрать почту сейчас»." });
+  };
+
   if (!form) return <Loading />;
+  const problems: string[] = settings.data?.problems ?? [];
+  const others: any[] = settings.data?.others ?? [];
   const senderCount = String(form.senders ?? "").split(/[\s,;]+/).filter((x: string) => x.includes("@")).length;
 
   return (
     <div className="space-y-4">
+      {problems.length > 0 && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-200" data-testid="box-mail-problems">
+          <div className="mb-1 font-semibold">Почему сводки не забираются с почты</div>
+          <ul className="list-inside list-disc space-y-0.5">
+            {problems.map((p) => <li key={p}>{p}</li>)}
+          </ul>
+        </div>
+      )}
+      {others.length > 0 && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="box-mail-others">
+          <div className="mb-1 font-semibold">Письма с Excel от адресов, которых нет в списке — программа их не берёт</div>
+          <div className="space-y-1">
+            {others.map((o) => (
+              <div key={o.from} className="flex flex-wrap items-center gap-2">
+                <b>{o.from}</b>
+                <span className="text-xs">писем: {o.count}{o.subject ? ` · «${o.subject}»` : ""}{o.date ? ` · последнее ${dt(o.date)}` : ""}</span>
+                <Button size="sm" variant="outline" className="h-7" onClick={() => addSender(o.from)} data-testid={`button-add-sender-${o.from}`}>
+                  Добавить в список
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <Section
         title="Почтовый ящик для сводок"
         description="Программа раз в час забирает Excel-вложения только от адресов из списка"

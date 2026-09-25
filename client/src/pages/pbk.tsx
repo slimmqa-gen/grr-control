@@ -170,7 +170,7 @@ export default function PbkPage() {
       </div>
 
       <Tabs defaultValue="daily">
-        <TabsList className="flex w-full flex-wrap justify-start">
+        <TabsList className="flex h-auto w-full flex-wrap justify-start">
           <TabsTrigger value="daily" data-testid="tab-daily">Суточная сводка</TabsTrigger>
           <TabsTrigger value="sources" data-testid="tab-sources">Сводки</TabsTrigger>
           <TabsTrigger value="mail" data-testid="tab-mail">Почта</TabsTrigger>

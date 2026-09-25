@@ -52,6 +52,8 @@ export type MailSettings = {
   days: number;
   lastCheck: string;
   lastResult: string;
+  /** ошибка последней проверки: пароль, связь, папка */
+  lastError: string;
 };
 
 const DEFAULT_MAIL: MailSettings = {
@@ -65,6 +67,7 @@ const DEFAULT_MAIL: MailSettings = {
   days: 3,
   lastCheck: "",
   lastResult: "",
+  lastError: "",
 };
 
 export function mailSettings(): MailSettings {
@@ -90,7 +93,36 @@ export function saveMailSettings(patch: Partial<MailSettings>): MailSettings {
 /** Для интерфейса: пароль не отдаём, только признак «задан» */
 export function publicMailSettings() {
   const { password, ...rest } = mailSettings();
-  return { ...rest, hasPassword: !!password };
+  let others: any[] = [];
+  try { others = JSON.parse(storage.getSetting("mail_others") || "[]"); } catch { others = []; }
+  return { ...rest, hasPassword: !!password, others, problems: mailProblems() };
+}
+
+/** Что мешает забирать почту — простым языком */
+export function mailProblems(): string[] {
+  const s = mailSettings();
+  const out: string[] = [];
+  if (!s.enabled) out.push("Выключен переключатель «Забирать сводки с почты каждый час» — автоматически почта не проверяется.");
+  if (!s.user) out.push("Не указан адрес ящика.");
+  if (!s.password) out.push("Не задан пароль для внешнего приложения.");
+  if (!senderList(s.senders).length) out.push("Список адресов отправителей пуст — программа не возьмёт ни одного письма.");
+  if (s.lastError) out.push(`Последняя проверка закончилась ошибкой: ${s.lastError}`);
+  return out;
+}
+
+/** Понятный текст ошибки почты */
+export function mailErrorText(e: any): string {
+  const msg = String(e?.responseText || e?.message || e);
+  if (e?.authenticationFailed || /auth|login|credentials|password|invalid/i.test(msg)) {
+    return "почта не пустила: неверный адрес или пароль. Для Mail.ru нужен пароль для внешнего приложения с доступом к IMAP (Настройки → Безопасность → Пароли для внешних приложений).";
+  }
+  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|timeout|EHOSTUNREACH/i.test(msg)) {
+    return `нет связи с почтовым сервером (${msg}). Проверьте сервер IMAP и порт: для Mail.ru — imap.mail.ru, 993.`;
+  }
+  if (/mailbox|folder|NONEXISTENT|doesn't exist/i.test(msg)) {
+    return `нет папки «${mailSettings().folder}». Обычно нужна INBOX.`;
+  }
+  return msg;
 }
 
 /** Список адресов: запятые, точки с запятой, пробелы и переводы строки */
@@ -151,13 +183,35 @@ export type MailCheckResult = {
   rejected: number;
   reload?: { files: number; note?: string };
   details: string[];
+  /** письма с Excel от адресов, которых нет в списке отправителей */
+  others?: { from: string; subject: string; date: string; count: number }[];
 };
+
+/** Есть ли в письме вложение Excel (по структуре, без скачивания) */
+function hasExcelPart(node: any): boolean {
+  if (!node) return false;
+  const name = String(node.dispositionParameters?.filename ?? node.parameters?.name ?? "");
+  if (/\.xlsx?$/i.test(name)) return true;
+  const type = String(node.type ?? "");
+  if (/spreadsheet|ms-excel/i.test(type)) return true;
+  return (node.childNodes ?? []).some(hasExcelPart);
+}
 
 /**
  * Забрать новые сводки из ящика. Возвращает, сколько файлов принято;
  * если принят хоть один — пересобирает данные сводок.
  */
 export async function checkMail(): Promise<MailCheckResult> {
+  try {
+    return await checkMailInner();
+  } catch (e) {
+    const text = mailErrorText(e);
+    saveMailSettings({ lastCheck: new Date().toISOString(), lastError: text, lastResult: `ошибка: ${text}` });
+    throw new Error(text);
+  }
+}
+
+async function checkMailInner(): Promise<MailCheckResult> {
   const s = mailSettings();
   const allowed = senderList(s.senders);
   const at = new Date().toISOString();
@@ -187,10 +241,21 @@ export async function checkMail(): Promise<MailCheckResult> {
 
       // сначала только заголовки — тяжёлые письма от посторонних не скачиваем
       const wanted: { uid: number; from: string; subject: string; date: string; messageId: string }[] = [];
+      const others = new Map<string, { from: string; subject: string; date: string; count: number }>();
       if (uids.length) {
-        for await (const msg of client.fetch(uids, { envelope: true, uid: true }, { uid: true })) {
+        for await (const msg of client.fetch(uids, { envelope: true, uid: true, bodyStructure: true }, { uid: true })) {
           const from = String(msg.envelope?.from?.[0]?.address ?? "").toLowerCase();
-          if (!from || !isAllowed(from, allowed)) continue;
+          if (!from) continue;
+          if (!isAllowed(from, allowed)) {
+            // письма с Excel от адресов вне списка — подсказка, кого добавить
+            if (hasExcelPart(msg.bodyStructure)) {
+              const o = others.get(from) ?? { from, subject: String(msg.envelope?.subject ?? ""), date: "", count: 0 };
+              o.count++;
+              o.date = msg.envelope?.date ? new Date(msg.envelope.date).toISOString() : o.date;
+              others.set(from, o);
+            }
+            continue;
+          }
           const messageId = String(msg.envelope?.messageId ?? `uid-${msg.uid}`);
           if (seenMsg.get(messageId)) continue;
           wanted.push({
@@ -200,6 +265,7 @@ export async function checkMail(): Promise<MailCheckResult> {
         }
       }
       res.fromAllowed = wanted.length;
+      res.others = Array.from(others.values()).sort((a, b) => b.count - a.count);
 
       for (const w of wanted) {
         const dl = await client.download(String(w.uid), undefined, { uid: true });
@@ -208,7 +274,7 @@ export async function checkMail(): Promise<MailCheckResult> {
         const parsed = await simpleParser(Buffer.concat(chunksArr));
         const atts = (parsed.attachments ?? []).filter((a) => isExcel(String(a.filename ?? "")));
         if (!atts.length) {
-          logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, "", "", "без вложений", "в письме нет файлов Excel");
+          logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, "", "", "без вложений", "в письме нет файлов Excel — возможно, сводку отправили ссылкой на Облако или архивом");
           continue;
         }
         const day = (w.date || at).slice(0, 10);
@@ -276,8 +342,10 @@ export async function checkMail(): Promise<MailCheckResult> {
   }
   saveMailSettings({
     lastCheck: at,
-    lastResult: `писем ${res.scanned}, от разрешённых ${res.fromAllowed}, файлов ${res.files}, принято ${res.accepted}, без изменений ${res.skipped}, не принято ${res.rejected}`,
+    lastResult: `писем ${res.scanned}, от ваших адресов новых ${res.fromAllowed}, файлов ${res.files}, принято ${res.accepted}, без изменений ${res.skipped}, не принято ${res.rejected}`,
+    lastError: "",
   });
+  storage.setSetting("mail_others", JSON.stringify(res.others ?? []));
   return res;
 }
 

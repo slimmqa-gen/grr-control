@@ -13,7 +13,7 @@ import {
   dailySummary, summaryText, defaultReportDate, dailySettings, saveDailySettings, saveSnapshot,
   snapshotList, snapshotById, summaryWorkbook, sendDailyNow, hourlyTick, localNow,
 } from "./daily";
-import { publicMailSettings, saveMailSettings, testMail, checkMail, mailLog, senderList, lastFilledDate } from "./mail";
+import { publicMailSettings, saveMailSettings, testMail, checkMail, mailLog, senderList, lastFilledDate, mailErrorText } from "./mail";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const fail = (res: Response, e: any, code = 400) =>
@@ -331,13 +331,11 @@ export function registerPbkRoutes(app: Express) {
   app.post("/api/pbk/mail/test", async (req, res) => {
     try {
       if (!isDirector(req)) return res.status(403).json({ error: "Проверка почты — у директора" });
-      res.json(await testMail());
+      const out = await testMail();
+      saveMailSettings({ lastError: "" });
+      res.json(out);
     } catch (e: any) {
-      const msg = String(e?.responseText || e?.message || e);
-      const hint = /auth|login|credentials|password/i.test(msg)
-        ? " Для Mail.ru нужен пароль для внешнего приложения: Настройки ящика → Безопасность → Пароли для внешних приложений."
-        : "";
-      res.status(400).json({ error: `Не удалось подключиться: ${msg}.${hint}` });
+      res.status(400).json({ error: `Не удалось подключиться: ${mailErrorText(e)}` });
     }
   });
 
