@@ -661,7 +661,9 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
   if (/^(сводка|бурение|суточная|производство)$/.test(cmd)) {
     const { dailySettings, dailySummary, summaryText } = await import("./daily");
     const receivers = dailySettings().chatIds.split(",").map((x) => x.trim()).filter(Boolean);
-    if (chatId && (receivers.includes(chatId) || isResponsible(chatId))) {
+    // только те, кого отметили получателями сводки: ответственные за вахты
+    // и остальные сотрудники её не получают, даже если попросят
+    if (chatId && receivers.includes(chatId)) {
       try {
         const text = summaryText(dailySummary());
         for (const part of text.match(/[\s\S]{1,3500}(?=\n|$)/g) ?? [text]) await sendMax(chatId, part.trim());
@@ -669,7 +671,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
         await sendMax(chatId, `Сводку собрать не удалось: ${String((e as Error)?.message ?? e)}`);
       }
     } else if (chatId) {
-      await sendMax(chatId, "Производственная сводка доступна только отмеченным получателям.");
+      await sendMax(chatId, "Производственная сводка вам недоступна. Если она нужна — обратитесь к руководителю.");
     }
     return { linked, replies };
   }

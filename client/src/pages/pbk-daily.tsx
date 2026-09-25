@@ -234,7 +234,7 @@ export function DailyTab() {
               </label>
               <div>
                 <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  Получатели — только привязанные к боту MAX
+                  Кому присылать сводку — отметьте только нужных. Остальные её не получат
                   <Badge variant="secondary" className="text-[11px]" data-testid="badge-daily-count">выбрано {picked.length}</Badge>
                 </div>
                 {linked.length === 0 ? (
@@ -258,8 +258,8 @@ export function DailyTab() {
               <div className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
                 Каждый час программа забирает почту и пересчитывает сводку за вчерашние сутки. В указанное
                 окно сводка уходит получателям один раз. Если потом участок дошлёт или поправит данные —
-                придёт короткое сообщение, что именно изменилось. Любой получатель может написать боту
-                «сводка» и получить её в любой момент.
+                придёт короткое сообщение, что именно изменилось. Сводку получают только отмеченные здесь
+                люди — остальным бот её не покажет, даже по команде «сводка».
               </div>
               <Button size="sm" variant="outline" onClick={() => runNow.mutate()} disabled={runNow.isPending} data-testid="button-daily-run">
                 <RefreshCw className={`mr-2 h-4 w-4 ${runNow.isPending ? "animate-spin" : ""}`} />
