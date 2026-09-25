@@ -80,6 +80,8 @@ export function crewOverviewText(day = todayLocal()) {
     if (!n && g.key !== "onshift") continue;
     lines.push(`${g.mark} ${g.title} — <b>${n}</b>`);
   }
+  const soonTrips = upcomingTrips(day).length;
+  if (soonTrips) lines.push(`🔷 Скоро командировка — <b>${soonTrips}</b>`);
   // вахта по участкам — самое нужное, показываем сразу
   const on = rows.filter((r) => r.state === "onshift");
   if (on.length) {
@@ -90,7 +92,7 @@ export function crewOverviewText(day = todayLocal()) {
   }
   lines.push("", "<i>Нажмите группу ниже, чтобы увидеть фамилии.</i>");
   const buttons = GROUPS
-    .filter((g) => rows.some((r) => g.states.includes(r.state)))
+    .filter((g) => rows.some((r) => g.states.includes(r.state)) || (g.key === "trip" && soonTrips > 0))
     .map((g) => ({ text: `${g.mark} ${g.title}`, payload: `st:crew:${g.key}` }));
   return { text: lines.join("\n"), buttons };
 }
@@ -100,7 +102,8 @@ export function crewGroupText(key: CrewGroup, day = todayLocal()) {
   const g = GROUPS.find((x) => x.key === key) ?? GROUPS[0];
   const rows = crewRows(day).filter((r) => g.states.includes(r.state));
   const lines = [`${g.mark} <b>${g.title} — ${rows.length}</b>`];
-  if (!rows.length) return [...lines, "", "Никого."].join("\n");
+  const soon = key === "trip" ? upcomingTrips(day) : [];
+  if (!rows.length && !soon.length) return [...lines, "", "Никого."].join("\n");
 
   const byObj = new Map<string, Row[]>();
   for (const r of rows) {
@@ -113,5 +116,26 @@ export function crewGroupText(key: CrewGroup, day = todayLocal()) {
       lines.push(`• ${esc(short(r.fio))}${r.note ? ` — <i>${esc(r.note)}</i>` : ""}`);
     }
   }
+  if (soon.length) {
+    lines.push("", "<b>Скоро выезжают:</b>");
+    for (const t of soon) lines.push(`• ${esc(short(t.fio))} — ${esc(t.place)}, <i>${dm(t.startDate)}${dm(t.endDate) ? `–${dm(t.endDate)}` : ""}</i>`);
+  }
   return lines.join("\n");
+}
+
+/** Командировки, которые начнутся в ближайшую неделю */
+export function upcomingTrips(day = todayLocal(), days = 7) {
+  const emps = storage.employees() as any[];
+  const objs = storage.objects() as any[];
+  const limit = new Date(day + "T00:00:00Z");
+  limit.setUTCDate(limit.getUTCDate() + days);
+  const to = limit.toISOString().slice(0, 10);
+  return (storage.employeeEvents() as any[])
+    .filter((ev) => ev.kind === "trip" && ev.startDate > day && ev.startDate <= to)
+    .sort((a, b) => a.startDate.localeCompare(b.startDate))
+    .map((ev) => ({
+      fio: emps.find((e) => e.id === ev.employeeId)?.fio ?? `#${ev.employeeId}`,
+      place: (ev.destinationObjectId ? objs.find((o) => o.id === ev.destinationObjectId)?.name : ev.destination) || "место не указано",
+      startDate: ev.startDate, endDate: ev.endDate,
+    }));
 }

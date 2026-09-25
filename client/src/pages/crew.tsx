@@ -950,6 +950,17 @@ export default function Crew() {
       };
     })
     .sort((a: any, b: any) => a.daysToStart - b.daysToStart);
+  // ближайшие командировки: выезд сегодня или в ближайшие дни
+  const dashTripSoon = empAllEvents
+    .filter((ev: any) => ev.kind === "trip")
+    .map((ev: any) => ({
+      ...ev,
+      fio: empFio(ev.employeeId),
+      place: (ev.destinationObjectId ? objName(ev.destinationObjectId) : ev.destination) || "место не указано",
+      daysToStart: Math.round((new Date(ev.startDate + "T00:00:00").getTime() - new Date(today + "T00:00:00").getTime()) / 86400000),
+    }))
+    .filter((ev: any) => ev.daysToStart >= 0 && ev.daysToStart <= arriveDays)
+    .sort((a: any, b: any) => a.daysToStart - b.daysToStart);
   const dashMed = rows
     .map((e: any) => ({ ...e, med: medExamInfo(e.medicalExamEndDate ?? "", today) }))
     .filter((e: any) => e.med.level !== "ok")
@@ -1022,7 +1033,7 @@ export default function Crew() {
     setShiftFocus(focus);
     scrollToList("table-rotation");
   };
-  const showAbsence = (kind: string, state: "active" | "endingSoon" = "active") => {
+  const showAbsence = (kind: string, state: "active" | "endingSoon" | "upcoming" = "active") => {
     setTab("absence");
     setAbsKindFilter(kind);
     setAbsStateFilter(state);
@@ -1179,7 +1190,7 @@ export default function Crew() {
 
       {tab === "dash" && (
         <>
-          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-7">
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Kpi
               testId="dash-kpi-total" label="Всего сотрудников" value={nf(counters.total)}
               onClick={() => showPeople("all")}
@@ -1207,6 +1218,11 @@ export default function Crew() {
               testId="dash-kpi-arrive" label="Скоро заезд на вахту" value={nf(dashSoonIn.length)}
               hint={`В ближайшие ${nf(arriveDays)} дн.`}
               onClick={() => showShifts("all", "arrive")}
+            />
+            <Kpi
+              testId="dash-kpi-trip-soon" label="Скоро командировка" value={nf(dashTripSoon.length)}
+              hint={`Выезд в ближайшие ${nf(arriveDays)} дн.`}
+              onClick={() => showAbsence("trip", "upcoming")}
             />
             <Kpi
               testId="dash-kpi-soon" label="Скоро выезд с вахты" value={nf(dashSoonOut.length)}
@@ -1269,6 +1285,35 @@ export default function Crew() {
                       level={r.daysToStart <= 1 ? "bad" : r.daysToStart <= 3 ? "warn" : "ok"}
                       onOpen={() => openEmployeeCard(r.employeeId)}
                       onAnalytics={() => openAnalytics(r.employeeId)}
+                    />
+                  ))}
+                </div>
+              )}
+            </Section>
+
+            <Section
+              title="Скоро командировка"
+              description={`Выезд в ближайшие ${nf(arriveDays)} дн. Нажмите строку — откроется запись`}
+              actions={dashTripSoon.length > 12 ? (
+                <Button variant="outline" size="sm" onClick={() => showAbsence("trip", "upcoming")} data-testid="dash-all-trip-soon">
+                  Показать все ({nf(dashTripSoon.length)})
+                </Button>
+              ) : undefined}
+            >
+              {dashTripSoon.length === 0 ? (
+                <Empty text="В ближайшие дни командировок нет." />
+              ) : (
+                <div className="space-y-1" data-testid="dash-list-trip-soon">
+                  {dashTripSoon.slice(0, 12).map((ev: any) => (
+                    <DashRow
+                      key={ev.id}
+                      testId={`dash-row-trip-soon-${ev.id}`}
+                      fio={ev.fio}
+                      sub={`${ev.place} · ${String(ev.startDate).slice(8, 10)}.${String(ev.startDate).slice(5, 7)}${ev.endDate && ev.endDate !== "9999-12-31" ? ` — ${String(ev.endDate).slice(8, 10)}.${String(ev.endDate).slice(5, 7)}` : ""}`}
+                      badge={ev.daysToStart <= 0 ? "выезд сегодня" : ev.daysToStart === 1 ? "выезд завтра" : `через ${nf(ev.daysToStart)} дн.`}
+                      level={ev.daysToStart <= 1 ? "bad" : ev.daysToStart <= 3 ? "warn" : "ok"}
+                      onOpen={() => openEditAbsence(ev)}
+                      onAnalytics={() => openAnalytics(ev.employeeId)}
                     />
                   ))}
                 </div>
