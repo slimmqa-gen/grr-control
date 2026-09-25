@@ -19,6 +19,7 @@ import { PageHeader, Section, Empty, Loading, ErrorBox, TableWrap } from "@/comp
 import { nf, money, pct, ruDate, levelText, type Level } from "@/lib/app";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
+import { DailyTab, MailTab } from "./pbk-daily";
 
 const TABLES: Array<{ code: string; label: string }> = [
   { code: "pbk_shifts", label: "Смены бурения" },
@@ -168,8 +169,10 @@ export default function PbkPage() {
           hint={`${nf(k.shifts)} смен, ${nf(k.meters)} м проходки, аварий и прихватов: ${nf(k.incidents)}`} />
       </div>
 
-      <Tabs defaultValue="chain">
+      <Tabs defaultValue="daily">
         <TabsList className="flex w-full flex-wrap justify-start">
+          <TabsTrigger value="daily" data-testid="tab-daily">Суточная сводка</TabsTrigger>
+          <TabsTrigger value="mail" data-testid="tab-mail">Почта</TabsTrigger>
           <TabsTrigger value="chain" data-testid="tab-chain">{finance ? "Зависшая выручка" : "Отставание переделов"}</TabsTrigger>
           <TabsTrigger value="loss" data-testid="tab-loss">Смены и потери</TabsTrigger>
           <TabsTrigger value="objects" data-testid="tab-objects">Участки и бурильщики</TabsTrigger>
@@ -180,6 +183,9 @@ export default function PbkPage() {
         </TabsList>
 
         {/* ---------- цепочка ---------- */}
+        <TabsContent value="daily" className="mt-4"><DailyTab /></TabsContent>
+        <TabsContent value="mail" className="mt-4"><MailTab /></TabsContent>
+
         <TabsContent value="chain" className="mt-3 space-y-4">
           <Section
             title="Цепочка: бурение → описание → распиловка → опробование → дробление → анализы"

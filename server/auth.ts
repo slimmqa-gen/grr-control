@@ -325,14 +325,15 @@ export function safeForAudit(value: unknown, depth = 0): unknown {
 function scrubAuditSecrets() {
   try {
     const rows = storage.auditWithSecrets?.() ?? [];
+    let changed = 0;
     for (const r of rows) {
       let parsed: unknown;
       try { parsed = JSON.parse(r.details); } catch { continue; }
       const clean = JSON.stringify(safeForAudit(parsed)).slice(0, 200);
-      if (clean !== r.details) storage.updateAuditDetails(r.id, clean);
+      if (clean !== r.details) { storage.updateAuditDetails(r.id, clean); changed++; }
     }
-    if (rows.length) {
-      console.log(`[Безопасность] Из журнала убраны пароли в ${rows.length} записях.`);
+    if (changed) {
+      console.log(`[Безопасность] Из журнала убраны пароли в ${changed} записях.`);
     }
   } catch {
     // чистка журнала не должна мешать запуску

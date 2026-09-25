@@ -657,7 +657,23 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
 
   // 6. запрос сводки: доступен только тем, кому разрешена рассылка сводок
   const cmd = text.trim().toLowerCase().replace(/^\//, "");
-  const isStatus = /^(статус|сводка|status|меню|menu)$/.test(cmd);
+  // производственная сводка: тем, кого отметили получателями сводки, и ответственным
+  if (/^(сводка|бурение|суточная|производство)$/.test(cmd)) {
+    const { dailySettings, dailySummary, summaryText } = await import("./daily");
+    const receivers = dailySettings().chatIds.split(",").map((x) => x.trim()).filter(Boolean);
+    if (chatId && (receivers.includes(chatId) || isResponsible(chatId))) {
+      try {
+        const text = summaryText(dailySummary());
+        for (const part of text.match(/[\s\S]{1,3500}(?=\n|$)/g) ?? [text]) await sendMax(chatId, part.trim());
+      } catch (e) {
+        await sendMax(chatId, `Сводку собрать не удалось: ${String((e as Error)?.message ?? e)}`);
+      }
+    } else if (chatId) {
+      await sendMax(chatId, "Производственная сводка доступна только отмеченным получателям.");
+    }
+    return { linked, replies };
+  }
+  const isStatus = /^(статус|status|меню|menu)$/.test(cmd);
   const isCallout = /^(заезд|заезды|вахта|вахты)$/.test(cmd);
   const isEvents = /^(события|опросы|событие|опрос)$/.test(cmd);
   if (isStatus || isCallout || isEvents) {

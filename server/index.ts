@@ -6,6 +6,7 @@ import { serveStatic } from "./static";
 import { createServer } from "node:http";
 import { startSmsScheduler, startMaxDigestScheduler } from "./sms";
 import { startMaxPolling } from "./max";
+import { startDailyScheduler } from "./daily";
 
 const app = express();
 const httpServer = createServer(app);
@@ -70,6 +71,7 @@ app.use((req, res, next) => {
   startSmsScheduler();
   // привязка сотрудников к боту MAX происходит сама после перехода по ссылке
   startMaxPolling();
+  startDailyScheduler();
   startMaxDigestScheduler();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

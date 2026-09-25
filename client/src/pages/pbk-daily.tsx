@@ -1,0 +1,512 @@
+/**
+ * Суточная производственная сводка и сбор сводок с почты.
+ * Показываются вкладками внутри раздела «Реальные данные ПБК».
+ */
+import { useEffect, useState } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Send, RefreshCw, Save, Mail, History, Plug, Download } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Section, Empty, Loading } from "@/components/shell";
+import { nf, downloadFile } from "@/lib/app";
+
+const ru = (iso: string) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}` : "");
+const dt = (iso: string) => (iso ? new Date(iso).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "");
+const lagCell = (lag: number, plan: number) => {
+  if (!plan) return <span className="text-muted-foreground">—</span>;
+  if (lag > 0) return <span className="font-medium text-red-600 dark:text-red-400">−{nf(lag)}</span>;
+  return <span className="font-medium text-emerald-600 dark:text-emerald-400">+{nf(-lag)}</span>;
+};
+
+/* ============================ Суточная сводка ============================ */
+
+export function DailyTab() {
+  const { toast } = useToast();
+  const [date, setDate] = useState("");
+  const [viewId, setViewId] = useState(0);
+
+  const q = useQuery<any>({ queryKey: [`/api/pbk/daily${date ? `?date=${date}` : ""}`] });
+  const archive = useQuery<any>({ queryKey: ["/api/pbk/daily/archive"] });
+  const snap = useQuery<any>({ queryKey: [`/api/pbk/daily/archive/${viewId}`], enabled: viewId > 0 });
+  const settings = useQuery<any>({ queryKey: ["/api/pbk/daily/settings"] });
+  const invites = useQuery<any>({ queryKey: ["/api/max/invites"] });
+
+  const [form, setForm] = useState<any>(null);
+  useEffect(() => { if (settings.data && !form) setForm(settings.data); }, [settings.data, form]);
+
+  const s = viewId > 0 ? snap.data?.data : q.data?.summary;
+  const shownDate = s?.date ?? "";
+
+  const saveSettings = useMutation({
+    mutationFn: async () => (await apiRequest("PUT", "/api/pbk/daily/settings", form)).json(),
+    onSuccess: (d: any) => {
+      setForm(d);
+      queryClient.invalidateQueries({ queryKey: ["/api/pbk/daily/settings"] });
+      toast({ title: "Настройки рассылки сохранены" });
+    },
+    onError: (e: any) => toast({ title: "Не сохранено", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
+  const sendNow = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/pbk/daily/send", { date: shownDate })).json(),
+    onSuccess: (d: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/pbk/daily/archive"] });
+      toast({
+        title: `Сводка отправлена: ${d.sent} из ${d.recipients}`,
+        description: d.errors?.length ? d.errors.slice(0, 2).join("; ") : undefined,
+        variant: d.errors?.length ? "destructive" : undefined,
+      });
+    },
+    onError: (e: any) => toast({ title: "Не отправлено", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
+  const snapshot = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/pbk/daily/snapshot", { date: shownDate })).json(),
+    onSuccess: (d: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/pbk/daily/archive"] });
+      toast({ title: d.isNew ? `Сохранена редакция ${d.version}` : "Такая редакция уже есть в архиве" });
+    },
+  });
+
+  const runNow = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/pbk/daily/run", {})).json(),
+    onSuccess: (d: any) => {
+      queryClient.invalidateQueries();
+      const mail = d.mail?.error ? `почта: ${d.mail.error}` : d.mail ? `с почты принято файлов: ${d.mail.accepted}` : "почта не подключена";
+      toast({ title: d.isNew ? "Данные изменились, сохранена новая редакция" : "Изменений нет", description: mail });
+    },
+    onError: (e: any) => toast({ title: "Не получилось", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
+  const linked = (invites.data?.rows ?? []).filter((r: any) => r.linked && r.chatId);
+  const picked: string[] = String(form?.chatIds ?? "").split(",").map((x: string) => x.trim()).filter(Boolean);
+  const toggle = (id: string, on: boolean) =>
+    setForm({ ...form, chatIds: (on ? [...picked, id] : picked.filter((x) => x !== id)).join(",") });
+
+  return (
+    <div className="space-y-4">
+      <Section
+        title={viewId > 0 ? `Архив: сводка за ${ru(shownDate)}, редакция ${snap.data?.version ?? ""}` : `Суточная сводка за ${ru(shownDate)}`}
+        description={viewId > 0
+          ? `Сохранена ${dt(snap.data?.created_at)} · ${snap.data?.reason ?? ""}`
+          : "Считается по загруженным сводкам участков и ЦПП. План — из справочника участков"}
+        actions={(
+          <div className="flex flex-wrap items-center gap-2">
+            {viewId > 0 ? (
+              <Button size="sm" variant="outline" onClick={() => setViewId(0)} data-testid="button-daily-back">
+                К текущей сводке
+              </Button>
+            ) : (
+              <Input
+                type="date" className="h-8 w-40" value={date || shownDate}
+                onChange={(e) => setDate(e.target.value)} data-testid="input-daily-date"
+              />
+            )}
+            <Button
+              size="sm" variant="outline"
+              onClick={() => downloadFile(
+                viewId > 0 ? `/api/pbk/daily/excel?id=${viewId}` : `/api/pbk/daily/excel?date=${shownDate}`,
+                `Svodka_PBK_${shownDate}.xlsx`,
+              )}
+              data-testid="button-daily-excel"
+            >
+              <Download className="mr-2 h-4 w-4" />Excel
+            </Button>
+            {viewId === 0 && (
+              <>
+                <Button size="sm" variant="outline" onClick={() => snapshot.mutate()} data-testid="button-daily-save">
+                  <Save className="mr-2 h-4 w-4" />В архив
+                </Button>
+                <Button size="sm" onClick={() => sendNow.mutate()} disabled={sendNow.isPending} data-testid="button-daily-send">
+                  <Send className="mr-2 h-4 w-4" />Отправить в MAX
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+      >
+        {(q.isLoading || (viewId > 0 && snap.isLoading)) ? <Loading /> : !s ? <Empty text="Нет данных." /> : (
+          <>
+            {s.missing?.length > 0 && (
+              <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="box-daily-missing">
+                Нет сводки за сутки: {s.missing.join(", ")}
+              </div>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[980px] text-sm" data-testid="table-daily">
+                <thead>
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="py-2 pr-2">Участок / бурильщик</th>
+                    <th className="py-2 pr-2">Станок</th>
+                    <th className="py-2 pr-2 text-right">За смену</th>
+                    <th className="py-2 pr-2 text-right">За сутки</th>
+                    <th className="py-2 pr-2 text-right">С начала месяца</th>
+                    <th className="py-2 pr-2 text-right">С начала года</th>
+                    <th className="py-2 pr-2 text-right">План месяца</th>
+                    <th className="py-2 pr-2 text-right">До плана</th>
+                    <th className="py-2 pr-2 text-right">Отставание (−) / опережение (+)</th>
+                    <th className="py-2 text-right">Выполнено</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {s.objects.map((o: any) => (
+                    <FragmentRows key={o.object} o={o} />
+                  ))}
+                  <tr className="border-t-2 font-semibold" data-testid="row-daily-total">
+                    <td className="py-2 pr-2">Итого бурение</td>
+                    <td />
+                    <td />
+                    <td className="py-2 pr-2 text-right">{nf(s.totals.day)}</td>
+                    <td className="py-2 pr-2 text-right">{nf(s.totals.month)}</td>
+                    <td className="py-2 pr-2 text-right">{nf(s.totals.year)}</td>
+                    <td className="py-2 pr-2 text-right">{nf(s.totals.planMonth)}</td>
+                    <td className="py-2 pr-2 text-right">{nf(Math.max(0, s.totals.remaining))}</td>
+                    <td className="py-2 pr-2 text-right">{lagCell(s.totals.lag, s.totals.planMonth)}</td>
+                    <td className="py-2 text-right">
+                      {s.totals.planMonth ? `${Math.round((s.totals.month / s.totals.planMonth) * 100)}%` : "—"}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-4 rounded-md border p-3" data-testid="box-daily-prep">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold">Пробоподготовка</span>
+                {!s.prep.reported && (
+                  <Badge variant="outline" className="text-[11px]">
+                    {s.prep.lastDate ? `нет данных за сутки, последние ${ru(s.prep.lastDate)}` : "сводки нет"}
+                  </Badge>
+                )}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {[
+                  ["Дроблено за сутки", s.prep.day, `истёрто ${nf(s.prep.milledDay)}`],
+                  ["Дроблено с начала месяца", s.prep.month, `истёрто ${nf(s.prep.milledMonth)}`],
+                  ["Дроблено с начала года", s.prep.year, `истёрто ${nf(s.prep.milledYear)}`],
+                ].map(([label, v, sub]) => (
+                  <div key={String(label)} className="rounded-md bg-muted/50 p-3">
+                    <div className="text-xs text-muted-foreground">{label}</div>
+                    <div className="text-xl font-semibold tabular-nums">{nf(Number(v))} <span className="text-sm font-normal">проб</span></div>
+                    <div className="text-xs text-muted-foreground">{sub}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+      </Section>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Section
+          title="Рассылка в MAX"
+          description="Кому и когда приходит сводка"
+          actions={(
+            <Button size="sm" onClick={() => saveSettings.mutate()} disabled={!form || saveSettings.isPending} data-testid="button-daily-settings-save">
+              <Save className="mr-2 h-4 w-4" />Сохранить
+            </Button>
+          )}
+        >
+          {!form ? <Loading /> : (
+            <div className="space-y-3 text-sm">
+              <label className="flex items-center gap-3">
+                <Switch checked={!!form.enabled} onCheckedChange={(v) => setForm({ ...form, enabled: v })} data-testid="switch-daily-enabled" />
+                Присылать сводку каждое утро
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <span>с</span>
+                <Input type="number" min={0} max={23} className="h-8 w-20" value={form.sendFrom}
+                  onChange={(e) => setForm({ ...form, sendFrom: Number(e.target.value) })} data-testid="input-daily-from" />
+                <span>до</span>
+                <Input type="number" min={1} max={24} className="h-8 w-20" value={form.sendTo}
+                  onChange={(e) => setForm({ ...form, sendTo: Number(e.target.value) })} data-testid="input-daily-to" />
+                <span className="text-muted-foreground">часов по Красноярску</span>
+              </div>
+              <label className="flex items-center gap-2">
+                <Checkbox checked={!!form.notifyChanges} onCheckedChange={(v) => setForm({ ...form, notifyChanges: !!v })} data-testid="check-daily-changes" />
+                После утренней сводки проверять каждый час и сообщать об изменениях
+              </label>
+              <div>
+                <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  Получатели — только привязанные к боту MAX
+                  <Badge variant="secondary" className="text-[11px]" data-testid="badge-daily-count">выбрано {picked.length}</Badge>
+                </div>
+                {linked.length === 0 ? (
+                  <Empty text="Никто не привязан к боту. Раздайте ссылки в «Сотрудники и вахты» → «Настройка уведомлений»." />
+                ) : (
+                  <div className="flex flex-wrap gap-2" data-testid="list-daily-recipients">
+                    {linked.map((r: any) => {
+                      const id = String(r.chatId);
+                      const on = picked.includes(id);
+                      return (
+                        <label key={id} className={`flex items-center gap-2 rounded-md border px-2 py-1 ${on ? "border-primary bg-muted" : ""}`}
+                          data-testid={`daily-recipient-${r.employeeId}`}>
+                          <Checkbox checked={on} onCheckedChange={(v) => toggle(id, !!v)} />
+                          {r.fio}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+                Каждый час программа забирает почту и пересчитывает сводку за вчерашние сутки. В указанное
+                окно сводка уходит получателям один раз. Если потом участок дошлёт или поправит данные —
+                придёт короткое сообщение, что именно изменилось. Любой получатель может написать боту
+                «сводка» и получить её в любой момент.
+              </div>
+              <Button size="sm" variant="outline" onClick={() => runNow.mutate()} disabled={runNow.isPending} data-testid="button-daily-run">
+                <RefreshCw className={`mr-2 h-4 w-4 ${runNow.isPending ? "animate-spin" : ""}`} />
+                Проверить почту и пересчитать сейчас
+              </Button>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Архив сводок" description="Каждая редакция сохраняется, когда меняются цифры">
+          {(archive.data?.rows ?? []).length === 0 ? <Empty text="Архив пока пуст." /> : (
+            <div className="max-h-[360px] space-y-1 overflow-y-auto" data-testid="list-daily-archive">
+              {(archive.data?.rows ?? []).map((r: any) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => { setViewId(r.id); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+                  className={`flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/50 ${viewId === r.id ? "border-primary" : ""}`}
+                  data-testid={`archive-item-${r.id}`}
+                >
+                  <span className="flex items-center gap-2">
+                    <History className="h-4 w-4 text-muted-foreground" />
+                    <b>{ru(r.report_date)}</b>
+                    <span className="text-muted-foreground">ред. {r.version}</span>
+                  </span>
+                  <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                    {r.reason}
+                    {r.sent ? <Badge variant="secondary" className="text-[10px]">отправлена</Badge> : null}
+                    <span>{dt(r.created_at)}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+function FragmentRows({ o }: { o: any }) {
+  const note = !o.reported
+    ? (o.lastDate ? `нет сводки за сутки · последние данные ${ru(o.lastDate)}` : "сводка не поступает")
+    : "";
+  return (
+    <>
+      <tr className="border-b bg-muted/40 font-semibold" data-testid={`row-daily-object-${o.object}`}>
+        <td className="py-2 pr-2">
+          {o.object}
+          {o.refName && o.refName !== o.object && <span className="ml-1 text-xs font-normal text-muted-foreground">(в справочнике «{o.refName}»)</span>}
+          {note && <div className="text-xs font-normal text-amber-700 dark:text-amber-400">{note}</div>}
+          {!o.planMonth && <div className="text-xs font-normal text-muted-foreground">план не задан в справочнике</div>}
+        </td>
+        <td />
+        <td />
+        <td className="py-2 pr-2 text-right">{nf(o.day)}</td>
+        <td className="py-2 pr-2 text-right">{nf(o.month)}</td>
+        <td className="py-2 pr-2 text-right">{nf(o.year)}</td>
+        <td className="py-2 pr-2 text-right">{o.planMonth ? nf(o.planMonth) : "—"}</td>
+        <td className="py-2 pr-2 text-right">{o.planMonth ? (o.remaining > 0 ? nf(o.remaining) : "выполнен") : "—"}</td>
+        <td className="py-2 pr-2 text-right">{lagCell(o.lag, o.planMonth)}</td>
+        <td className="py-2 text-right">{o.planMonth ? `${o.pct}%` : "—"}</td>
+      </tr>
+      {o.workers.map((w: any) => (
+        <tr key={w.name} className={`border-b ${w.onDay ? "" : "text-muted-foreground"}`} data-testid={`row-daily-worker-${w.name}`}>
+          <td className="py-1.5 pl-4 pr-2">
+            {w.name}
+            {w.day === 0 && w.comment && <div className="text-xs text-muted-foreground">{w.comment}</div>}
+          </td>
+          <td className="py-1.5 pr-2 text-xs">{w.rig}</td>
+          <td className="py-1.5 pr-2 text-right">{w.onDay ? nf(w.day) : "—"}</td>
+          <td />
+          <td className="py-1.5 pr-2 text-right">{nf(w.month)}</td>
+          <td className="py-1.5 pr-2 text-right">{nf(w.year)}</td>
+          <td colSpan={4} />
+        </tr>
+      ))}
+    </>
+  );
+}
+
+/* ============================ Почта ============================ */
+
+export function MailTab() {
+  const { toast } = useToast();
+  const settings = useQuery<any>({ queryKey: ["/api/pbk/mail/settings"] });
+  const log = useQuery<any>({ queryKey: ["/api/pbk/mail/log"] });
+  const [form, setForm] = useState<any>(null);
+  const [password, setPassword] = useState("");
+  useEffect(() => {
+    if (settings.data && !form) setForm({ ...settings.data, senders: String(settings.data.senders ?? "").split(", ").filter(Boolean).join("\n") });
+  }, [settings.data, form]);
+
+  const save = useMutation({
+    mutationFn: async () => (await apiRequest("PUT", "/api/pbk/mail/settings", { ...form, password })).json(),
+    onSuccess: (d: any) => {
+      setPassword("");
+      setForm({ ...d, senders: String(d.senders ?? "").split(", ").filter(Boolean).join("\n") });
+      queryClient.invalidateQueries({ queryKey: ["/api/pbk/mail/settings"] });
+      toast({ title: "Настройки почты сохранены", description: `Адресов отправителей: ${d.senderCount}` });
+    },
+    onError: (e: any) => toast({ title: "Не сохранено", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
+  const test = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/pbk/mail/test", {})).json(),
+    onSuccess: (d: any) => toast({ title: "Подключение работает", description: `Писем в папке: ${d.messages}, непрочитанных: ${d.unseen}` }),
+    onError: (e: any) => toast({ title: "Нет подключения", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
+  const check = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/pbk/mail/check", {})).json(),
+    onSuccess: (d: any) => {
+      queryClient.invalidateQueries();
+      toast({
+        title: d.accepted ? `Принято файлов: ${d.accepted}` : "Новых сводок нет",
+        description: `Писем за период ${d.scanned}, от ваших адресов новых ${d.fromAllowed}, не принято ${d.rejected}`,
+      });
+    },
+    onError: (e: any) => toast({ title: "Не получилось", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
+  if (!form) return <Loading />;
+  const senderCount = String(form.senders ?? "").split(/[\s,;]+/).filter((x: string) => x.includes("@")).length;
+
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Почтовый ящик для сводок"
+        description="Программа раз в час забирает Excel-вложения только от адресов из списка"
+        actions={(
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={() => test.mutate()} disabled={test.isPending} data-testid="button-mail-test">
+              <Plug className="mr-2 h-4 w-4" />Проверить подключение
+            </Button>
+            <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending} data-testid="button-mail-save">
+              <Save className="mr-2 h-4 w-4" />Сохранить
+            </Button>
+          </div>
+        )}
+      >
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="space-y-3 text-sm">
+            <label className="flex items-center gap-3">
+              <Switch checked={!!form.enabled} onCheckedChange={(v) => setForm({ ...form, enabled: v })} data-testid="switch-mail-enabled" />
+              Забирать сводки с почты каждый час
+            </label>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Адрес ящика</label>
+              <Input value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })}
+                placeholder="svodki@mail.ru" data-testid="input-mail-user" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Пароль для внешнего приложения {form.hasPassword && <span className="text-emerald-600">— задан, оставьте пустым, чтобы не менять</span>}
+              </label>
+              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                placeholder={form.hasPassword ? "••••••••" : "пароль приложения из настроек Mail.ru"} autoComplete="new-password"
+                data-testid="input-mail-password" />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2">
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Сервер IMAP</label>
+                <Input value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} data-testid="input-mail-host" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Порт</label>
+                <Input type="number" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} data-testid="input-mail-port" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Папка</label>
+                <Input value={form.folder} onChange={(e) => setForm({ ...form, folder: e.target.value })} data-testid="input-mail-folder" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Смотреть письма за, дней</label>
+                <Input type="number" min={1} max={30} value={form.days} onChange={(e) => setForm({ ...form, days: Number(e.target.value) })} data-testid="input-mail-days" />
+              </div>
+            </div>
+            <div className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+              Для Mail.ru обычный пароль не подойдёт. Откройте почту → Настройки → Безопасность →
+              «Пароли для внешних приложений», создайте пароль с доступом к IMAP и вставьте его сюда.
+              Письма в ящике не удаляются и не помечаются прочитанными.
+            </div>
+          </div>
+
+          <div className="space-y-2 text-sm">
+            <label className="block text-xs font-medium text-muted-foreground">
+              С каких адресов брать сводки — по одному в строке
+            </label>
+            <Textarea
+              rows={9} value={form.senders} onChange={(e) => setForm({ ...form, senders: e.target.value })}
+              placeholder={"master.veduga@mail.ru\nergozhu@bk.ru\n@pbk-geo.ru"}
+              className="font-mono text-sm" data-testid="input-mail-senders"
+            />
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Badge variant="secondary" data-testid="badge-mail-senders">адресов: {senderCount}</Badge>
+              Чтобы принимать письма со всего домена, впишите его с собачкой: <code>@pbk-geo.ru</code>
+            </div>
+            <div className="rounded-md border p-2 text-xs text-muted-foreground">
+              Письма от других адресов программа не открывает. Файл принимается, только если в нём
+              распознана сводка бурения или ЦПП, — иначе он попадает в журнал как «не принят». Новый
+              файл с тем же именем заменяет прежний, оригиналы всех вложений сохраняются в архиве почты.
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        title="Журнал почты"
+        description={form.lastCheck ? `Последняя проверка ${dt(form.lastCheck)}: ${form.lastResult}` : "Проверок ещё не было"}
+        actions={(
+          <Button size="sm" variant="outline" onClick={() => check.mutate()} disabled={check.isPending} data-testid="button-mail-check">
+            <Mail className={`mr-2 h-4 w-4 ${check.isPending ? "animate-pulse" : ""}`} />Забрать почту сейчас
+          </Button>
+        )}
+      >
+        {(log.data?.rows ?? []).length === 0 ? <Empty text="Писем от ваших адресов ещё не было." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[820px] text-sm" data-testid="table-mail-log">
+              <thead>
+                <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th className="py-2 pr-2">Когда</th>
+                  <th className="py-2 pr-2">От кого</th>
+                  <th className="py-2 pr-2">Файл</th>
+                  <th className="py-2 pr-2">Итог</th>
+                  <th className="py-2">Пояснение</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(log.data?.rows ?? []).map((r: any) => (
+                  <tr key={r.id} className="border-b" data-testid={`mail-log-${r.id}`}>
+                    <td className="py-1.5 pr-2 text-xs text-muted-foreground">{dt(r.received_at || r.checked_at)}</td>
+                    <td className="py-1.5 pr-2">{r.from_addr}<div className="text-xs text-muted-foreground">{r.subject}</div></td>
+                    <td className="py-1.5 pr-2 text-xs">{r.file || "—"}</td>
+                    <td className="py-1.5 pr-2">
+                      <Badge variant={r.status === "принят" ? "default" : r.status === "не принят" ? "destructive" : "secondary"}>{r.status}</Badge>
+                    </td>
+                    <td className="py-1.5 text-xs text-muted-foreground">{r.note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}

@@ -609,7 +609,7 @@ export default function Crew() {
       const options = evForm.kind === "poll"
         ? evForm.options.split("\n").map((x) => x.trim()).filter(Boolean)
         : [];
-      return apiRequest("POST", "/api/max/events", { ...evForm, options });
+      return (await apiRequest("POST", "/api/max/events", { ...evForm, options })).json();
     },
     onSuccess: async (row: any) => {
       await queryClient.invalidateQueries({ queryKey: ["/api/max/events"] });
@@ -622,7 +622,7 @@ export default function Crew() {
 
   const sendEvent = useMutation({
     mutationFn: async (v: { id: number; employeeIds: number[] }) =>
-      apiRequest("POST", `/api/max/events/${v.id}/send`, { employeeIds: v.employeeIds }),
+      (await apiRequest("POST", `/api/max/events/${v.id}/send`, { employeeIds: v.employeeIds })).json(),
     onSuccess: async (out: any) => {
       await queryClient.invalidateQueries({ queryKey: ["/api/max/events"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/max/events", String(evOpenId), "results"] });
@@ -653,7 +653,7 @@ export default function Crew() {
   });
 
   const eventDigest = useMutation({
-    mutationFn: async (id: number) => apiRequest("POST", `/api/max/events/${id}/digest`, {}),
+    mutationFn: async (id: number) => (await apiRequest("POST", `/api/max/events/${id}/digest`, {})).json(),
     onSuccess: (out: any) => toast({ title: `Итоги отправлены: ${out?.sent ?? 0}` }),
     onError: (e: any) => toast({ title: "Не получилось", description: String(e?.message ?? e), variant: "destructive" }),
   });

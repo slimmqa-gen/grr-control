@@ -7,6 +7,11 @@ import { PBK_PROFILES, parseWorkbook } from "./pbkparse";
 import { loadPbkFiles, PBK_DIR, ORG_NAME } from "./pbkload";
 import { pbkAnalytics, reclassifyShifts, rates, factRevenue, hangingRevenue } from "./pbkecon";
 import { storage, restoreDemoData } from "./storage";
+import {
+  dailySummary, summaryText, defaultReportDate, dailySettings, saveDailySettings, saveSnapshot,
+  snapshotList, snapshotById, summaryWorkbook, sendDailyNow, hourlyTick, localNow,
+} from "./daily";
+import { publicMailSettings, saveMailSettings, testMail, checkMail, mailLog, senderList } from "./mail";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const fail = (res: Response, e: any, code = 400) =>
@@ -121,6 +126,126 @@ export function registerPbkRoutes(app: Express) {
   }));
 
   /** Пробный разбор произвольного файла заказчика встроенными профилями */
+  /* ---------- суточная сводка ---------- */
+  const isDirector = (req: any) => req.authUser?.role === "director";
+  const dateOf = (v: any) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? "")) ? String(v) : defaultReportDate());
+
+  app.get("/api/pbk/daily", (req, res) => {
+    try {
+      const s = dailySummary(dateOf(req.query.date));
+      res.json({ summary: s, text: summaryText(s), today: localNow().date });
+    } catch (e) { fail(res, e); }
+  });
+
+  app.get("/api/pbk/daily/settings", (_req, res) => {
+    try { res.json(dailySettings()); } catch (e) { fail(res, e); }
+  });
+
+  app.put("/api/pbk/daily/settings", (req, res) => {
+    try {
+      if (!isDirector(req)) return res.status(403).json({ error: "Настройки рассылки меняет директор" });
+      const b = req.body ?? {};
+      const patch: any = {};
+      for (const k of ["enabled", "notifyChanges"]) if (b[k] !== undefined) patch[k] = !!b[k];
+      for (const k of ["sendFrom", "sendTo"]) if (b[k] !== undefined) patch[k] = Number(b[k]);
+      if (b.chatIds !== undefined) patch.chatIds = String(b.chatIds);
+      if (b.tz !== undefined) patch.tz = String(b.tz) || "Asia/Krasnoyarsk";
+      res.json(saveDailySettings(patch));
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Сохранить текущую редакцию в архив вручную */
+  app.post("/api/pbk/daily/snapshot", (req, res) => {
+    try {
+      const { row, isNew } = saveSnapshot(dailySummary(dateOf(req.body?.date)), "сохранено вручную");
+      res.json({ id: row.id, version: row.version, isNew });
+    } catch (e) { fail(res, e); }
+  });
+
+  app.get("/api/pbk/daily/archive", (_req, res) => {
+    try { res.json({ rows: snapshotList() }); } catch (e) { fail(res, e); }
+  });
+
+  app.get("/api/pbk/daily/archive/:id", (req, res) => {
+    try {
+      const row = snapshotById(Number(req.params.id));
+      if (!row) return res.status(404).json({ error: "Редакция не найдена" });
+      res.json(row);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Excel: по дате (текущий расчёт) или по редакции из архива */
+  app.get("/api/pbk/daily/excel", async (req, res) => {
+    try {
+      const snap = req.query.id ? snapshotById(Number(req.query.id)) : null;
+      const s = snap ? snap.data : dailySummary(dateOf(req.query.date));
+      const buf = await summaryWorkbook(s);
+      const name = `Svodka_PBK_${s.date}${snap ? `_v${snap.version}` : ""}.xlsx`;
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${name}"`);
+      res.send(buf);
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Отправить сводку в MAX сейчас */
+  app.post("/api/pbk/daily/send", async (req, res) => {
+    try {
+      if (!dailySettings().chatIds.trim()) return res.status(400).json({ error: "Не выбраны получатели сводки" });
+      res.json(await sendDailyNow(dateOf(req.body?.date)));
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Проверить почту и пересчитать прямо сейчас, как это делает ежечасная проверка */
+  app.post("/api/pbk/daily/run", async (req, res) => {
+    try {
+      if (!isDirector(req)) return res.status(403).json({ error: "Запуск проверки — у директора" });
+      res.json(await hourlyTick(true));
+    } catch (e) { fail(res, e); }
+  });
+
+  /* ---------- почта ---------- */
+  app.get("/api/pbk/mail/settings", (_req, res) => {
+    try { res.json(publicMailSettings()); } catch (e) { fail(res, e); }
+  });
+
+  app.put("/api/pbk/mail/settings", (req, res) => {
+    try {
+      if (!isDirector(req)) return res.status(403).json({ error: "Настройки почты меняет директор" });
+      const b = req.body ?? {};
+      const patch: any = {};
+      if (b.enabled !== undefined) patch.enabled = !!b.enabled;
+      for (const k of ["host", "user", "folder", "senders"]) if (b[k] !== undefined) patch[k] = String(b[k]).trim();
+      for (const k of ["port", "days"]) if (b[k] !== undefined) patch[k] = Number(b[k]);
+      if (b.password) patch.password = String(b.password);
+      saveMailSettings(patch);
+      res.json({ ...publicMailSettings(), senderCount: senderList(publicMailSettings().senders).length });
+    } catch (e) { fail(res, e); }
+  });
+
+  app.post("/api/pbk/mail/test", async (req, res) => {
+    try {
+      if (!isDirector(req)) return res.status(403).json({ error: "Проверка почты — у директора" });
+      res.json(await testMail());
+    } catch (e: any) {
+      const msg = String(e?.responseText || e?.message || e);
+      const hint = /auth|login|credentials|password/i.test(msg)
+        ? " Для Mail.ru нужен пароль для внешнего приложения: Настройки ящика → Безопасность → Пароли для внешних приложений."
+        : "";
+      res.status(400).json({ error: `Не удалось подключиться: ${msg}.${hint}` });
+    }
+  });
+
+  app.post("/api/pbk/mail/check", async (req, res) => {
+    try {
+      if (!isDirector(req)) return res.status(403).json({ error: "Проверка почты — у директора" });
+      res.json(await checkMail());
+    } catch (e) { fail(res, e); }
+  });
+
+  app.get("/api/pbk/mail/log", (_req, res) => {
+    try { res.json({ rows: mailLog() }); } catch (e) { fail(res, e); }
+  });
+
   app.post("/api/pbk/preview", upload.single("file"), (req, res) => {
     try {
       if (!req.file) throw new Error("Файл не выбран");
