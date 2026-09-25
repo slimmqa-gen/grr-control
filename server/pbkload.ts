@@ -124,6 +124,27 @@ export function loadPbkFiles(dir = PBK_DIR): LoadReport {
   return { org: ORG_NAME, at, counts: pbkCounts(), mirrored, files: results.map((r) => ({ file: r.file, profiles: r.profiles, loaded: r.loaded, skipped: r.skipped, sheets: r.sheets })) };
 }
 
+/** Упрощённое имя участка для сравнения: «Долгинский (Блохинская площадь)» ~ «Блохинская площадь» */
+export function normObjectName(s: string): string {
+  return String(s ?? "").toLowerCase().replace(/ё/g, "е")
+    .replace(/[«»"'()]/g, " ")
+    .replace(/\b(участок|уч-к|уч\.|площадь|пл\.|месторождение|м-е)\b/g, " ")
+    .replace(/\s+/g, " ").trim();
+}
+
+/** Найти участок справочника по имени из сводки: точно, затем по вхождению */
+export function findObjectByName(list: any[], name: string): any | null {
+  const n = normObjectName(name);
+  if (!n) return null;
+  const exact = list.find((o) => normObjectName(o.name) === n);
+  if (exact) return exact;
+  const words = n.split(" ").filter((w) => w.length >= 4);
+  return list.find((o) => {
+    const on = normObjectName(o.name);
+    return on && (n.includes(on) || on.includes(n) || words.some((w) => on.includes(w)));
+  }) ?? null;
+}
+
 /** Перенос реальных данных в рабочие таблицы программы вместо демо-набора */
 export function mirrorToWorkTables(): Record<string, number> {
   // Защита от потери данных: полная очистка допустима только тогда,
@@ -134,7 +155,13 @@ export function mirrorToWorkTables(): Record<string, number> {
     console.warn("[ПБК] Перенос в рабочие таблицы пропущен: загруженных сводок нет. Данные программы сохранены.");
     return {};
   }
-  storage.fullReset();
+  // Пересобираем только производственные таблицы, которые целиком строятся
+  // из сводок. Сотрудники, вахты, объекты с планами, календарь и остальной
+  // справочник ведутся в программе вручную — их трогать нельзя. Раньше здесь
+  // стояла полная очистка, и каждая загрузка сводки стирала кадровый блок.
+  for (const t of ["reports", "core_logs", "core_cuts", "rigs", "brigades"]) {
+    try { pdb.prepare(`DELETE FROM ${t}`).run(); } catch { /* таблицы может не быть */ }
+  }
 
   const shifts = pdb.prepare(`SELECT * FROM pbk_shifts`).all() as any[];
   const geo = pdb.prepare(`SELECT * FROM pbk_geo`).all() as any[];
@@ -146,7 +173,11 @@ export function mirrorToWorkTables(): Record<string, number> {
     ...(pdb.prepare(`SELECT DISTINCT object o FROM pbk_plan_lines WHERE object<>''`).all() as any[]).map((r) => r.o),
   ]));
   const objIds: Record<string, number> = {};
+  const existingObjects = storage.objects() as any[];
   for (const name of objNames) {
+    // участок уже есть в справочнике — берём его вместе с планом, ничего не меняя
+    const known = findObjectByName(existingObjects, name);
+    if (known) { objIds[name] = known.id; continue; }
     const sh = shifts.filter((s) => s.object === name);
     const meters = sh.reduce((a, s) => a + s.meters, 0);
     const months = new Set(sh.map((s) => String(s.date).slice(0, 7))).size || 1;
@@ -183,10 +214,12 @@ export function mirrorToWorkTables(): Record<string, number> {
     brigIds[p] = row.id;
   }
 
-  // персонал: бурильщики и геологи-исполнители
+  // Персонал из сводок больше не заводится автоматически: справочник людей
+  // ведётся вручную, а бурильщики из сводок видны в производственных таблицах.
   let staff = 0;
+  const AUTO_STAFF = false;
   const seenFio = new Set<string>();
-  for (const s of shifts) {
+  for (const s of AUTO_STAFF ? shifts : []) {
     const fio = s.shift_master;
     if (!fio || seenFio.has(fio + s.object)) continue;
     seenFio.add(fio + s.object);
@@ -195,7 +228,7 @@ export function mirrorToWorkTables(): Record<string, number> {
       brigadeId: brigIds[`${s.object}||${s.master || "бригада"}`] ?? 0, phone: "",
     }).run(); staff++;
   }
-  for (const g of geo) {
+  for (const g of AUTO_STAFF ? geo : []) {
     const fio = g.executor;
     if (!fio || fio.length > 60 || seenFio.has(fio + g.object)) continue;
     seenFio.add(fio + g.object);

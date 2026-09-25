@@ -120,10 +120,15 @@ const rowText = (row: any[]) => (row || []).map((v) => norm(v)).join(" | ");
 const gridText = (grid: Grid, upto = 12) => grid.slice(0, upto).map(rowText).join(" \n ").toLowerCase();
 
 const TOTAL_WORDS = ["итого", "всего", "пробурено за месяц", "среднее за день", "среднее за смену",
-  "количество смен", "максимальное значение", "задокументировано", "опробовано за месяц", "заказчик", "подрядчик"];
+  "количество смен", "максимальное значение", "задокументировано", "опробовано за месяц", "заказчик", "подрядчик",
+  "минимальное значение"];
+/** Служебные строки внизу листов: «Max. за смену», «Min. за смену», «Среднее…» */
+const STAT_ROW = /^\s*(max|min|макс|мин|средн)[\s.]/i;
 export function isTotalRow(row: any[]): boolean {
   const t = rowText(row).toLowerCase();
   if (!t.replace(/[\s|]/g, "")) return false;
+  const first = String(row.find((c) => c !== null && c !== undefined && String(c).trim() !== "") ?? "");
+  if (STAT_ROW.test(first)) return true;
   return TOTAL_WORDS.some((w) => t.includes(w));
 }
 
