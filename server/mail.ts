@@ -342,7 +342,11 @@ async function checkMailInner(): Promise<MailCheckResult> {
   }
   saveMailSettings({
     lastCheck: at,
-    lastResult: `писем ${res.scanned}, от ваших адресов новых ${res.fromAllowed}, файлов ${res.files}, принято ${res.accepted}, без изменений ${res.skipped}, не принято ${res.rejected}`,
+    lastResult: res.accepted
+      ? `взято новых сводок: ${res.accepted} (${res.details.join(", ")})${res.rejected ? `, не принято ${res.rejected}` : ""}`
+      : res.fromAllowed
+        ? `новые письма от ваших адресов есть (${res.fromAllowed}), но новых сводок в них нет: без изменений ${res.skipped}, не принято ${res.rejected} — подробности в журнале`
+        : `новых писем от ваших адресов нет — всё, что приходило раньше, уже в программе (писем в ящике за период: ${res.scanned})`,
     lastError: "",
   });
   storage.setSetting("mail_others", JSON.stringify(res.others ?? []));

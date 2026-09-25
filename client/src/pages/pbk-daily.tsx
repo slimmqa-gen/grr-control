@@ -31,7 +31,9 @@ export function DailyTab() {
   const [date, setDate] = useState("");
   const [viewId, setViewId] = useState(0);
 
-  const q = useQuery<any>({ queryKey: [`/api/pbk/daily${date ? `?date=${date}` : ""}`] });
+  const q = useQuery<any>({ queryKey: [`/api/pbk/daily${date ? `?date=${date}` : ""}`], refetchInterval: 60_000 });
+  const mailQ = useQuery<any>({ queryKey: ["/api/pbk/mail/settings"], refetchInterval: 60_000 });
+  const srcQ = useQuery<any>({ queryKey: ["/api/pbk/sources"], refetchInterval: 60_000 });
   const archive = useQuery<any>({ queryKey: ["/api/pbk/daily/archive"] });
   const snap = useQuery<any>({ queryKey: [`/api/pbk/daily/archive/${viewId}`], enabled: viewId > 0 });
   const settings = useQuery<any>({ queryKey: ["/api/pbk/daily/settings"] });
@@ -89,8 +91,42 @@ export function DailyTab() {
   const toggle = (id: string, on: boolean) =>
     setForm({ ...form, chatIds: (on ? [...picked, id] : picked.filter((x) => x !== id)).join(",") });
 
+  const m = mailQ.data;
+  const mailState: { tone: string; title: string; text: string } = !m ? { tone: "muted", title: "", text: "" }
+    : !m.enabled
+      ? { tone: "bad", title: "Почта не забирается", text: "Переключатель на вкладке «Почта» выключен — сводки попадают в программу только если загрузить их вручную." }
+      : m.lastError
+        ? { tone: "bad", title: "Почта не забирается — ошибка", text: m.lastError }
+        : !m.lastCheck
+          ? { tone: "warn", title: "Почта ещё ни разу не проверялась", text: "Нажмите «Забрать почту сейчас» на вкладке «Почта»." }
+          : { tone: "ok", title: `Почта работает · проверка ${dt(m.lastCheck)}`, text: m.lastResult };
+  const toneCls = (t: string) => t === "ok"
+    ? "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+    : t === "warn" ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
+    : "border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-200";
+
   return (
     <div className="space-y-4">
+      {m && viewId === 0 && (
+        <div className={`rounded-md border p-3 text-sm ${toneCls(mailState.tone)}`} data-testid="box-daily-status">
+          <div className="font-semibold">{mailState.title}</div>
+          <div className="text-xs">{mailState.text}</div>
+          {(m.others ?? []).length > 0 && (
+            <div className="mt-1 text-xs">
+              Есть письма со сводками от адресов вне списка: {(m.others ?? []).map((o: any) => o.from).join(", ")} — добавьте их на вкладке «Почта».
+            </div>
+          )}
+          {(srcQ.data?.rows ?? []).length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2 text-xs" data-testid="list-daily-freshness">
+              {(srcQ.data?.rows ?? []).map((r: any) => (
+                <span key={r.object} className={`rounded px-2 py-0.5 ${r.daysAgo !== null && r.daysAgo <= 1 ? "bg-white/70 dark:bg-black/30" : "bg-red-200/70 dark:bg-red-900/60"}`}>
+                  <b>{r.object}</b>: данные по {r.lastDate ? ru(r.lastDate) : "—"} · {r.source}{r.source === "почта" && r.at ? ` ${dt(r.at)}` : ""}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <Section
         title={viewId > 0 ? `Архив: сводка за ${ru(shownDate)}, редакция ${snap.data?.version ?? ""}` : `Суточная сводка за ${ru(shownDate)}`}
         description={viewId > 0
@@ -133,6 +169,12 @@ export function DailyTab() {
       >
         {(q.isLoading || (viewId > 0 && snap.isLoading)) ? <Loading /> : !s ? <Empty text="Нет данных." /> : (
           <>
+            {s.objects.every((o: any) => !o.year) && !s.prep.year && (
+              <div className="mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-200" data-testid="box-daily-empty">
+                За {shownDate.slice(0, 4)} год в программе нет ни одной строки из сводок, поэтому здесь нули. Загрузите сводки на вкладке
+                «Сводки» или проверьте почту — состояние почты показано выше.
+              </div>
+            )}
             {s.missing?.length > 0 && (
               <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="box-daily-missing">
                 Нет сводки за сутки: {s.missing.join(", ")}
