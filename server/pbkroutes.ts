@@ -4,7 +4,8 @@ import multer from "multer";
 import fs from "fs";
 import { pdb, seedReasons, reasonList, PBK_TABLES, pbkCounts, clearPbkData } from "./pbkdb";
 import { PBK_PROFILES, parseWorkbook } from "./pbkparse";
-import { loadPbkFiles, PBK_DIR, ORG_NAME } from "./pbkload";
+import { loadPbkFiles, PBK_DIR, ORG_NAME, lastOverlaps } from "./pbkload";
+import path from "path";
 import { pbkAnalytics, reclassifyShifts, rates, factRevenue, hangingRevenue } from "./pbkecon";
 import { storage, restoreDemoData } from "./storage";
 import {
@@ -92,13 +93,73 @@ export function registerPbkRoutes(app: Express) {
       const files = (req.files as any[]) ?? [];
       if (!files.length) throw new Error("Файлы не выбраны");
       if (!fs.existsSync(PBK_DIR)) fs.mkdirSync(PBK_DIR, { recursive: true });
+      const accepted: string[] = [];
+      const replaced: string[] = [];
+      const rejected: { file: string; reason: string }[] = [];
       for (const f of files) {
-        const safeName = String(f.originalname).replace(/[/\\]/g, "_");
-        fs.writeFileSync(`${PBK_DIR}/${safeName}`, f.buffer);
+        // имя из браузера приходит в latin1 — возвращаем кириллицу
+        let name = String(f.originalname);
+        try { const u = Buffer.from(name, "latin1").toString("utf8"); if (!u.includes("\uFFFD")) name = u; } catch { /* как есть */ }
+        const safeName = name.replace(/[/\\]/g, "_");
+        if (!/\.xlsx?$/i.test(safeName)) { rejected.push({ file: safeName, reason: "не файл Excel" }); continue; }
+        // сначала проверяем, что это сводка: посторонний файл не должен попасть в данные
+        let ok = false;
+        try { ok = parseWorkbook(f.buffer, safeName).loaded > 0; } catch { ok = false; }
+        if (!ok) { rejected.push({ file: safeName, reason: "не распознан как сводка бурения, геологии или ЦПП" }); continue; }
+        const target = path.join(PBK_DIR, safeName);
+        if (fs.existsSync(target)) replaced.push(safeName);
+        fs.writeFileSync(target, f.buffer);
+        accepted.push(safeName);
       }
-      const report = loadPbkFiles();
-      res.json(report);
+      const report = accepted.length ? loadPbkFiles() : null;
+      res.json({ ...(report ?? {}), accepted, replaced, rejected, overlaps: lastOverlaps() });
     } catch (e) { fail(res, e, 500); }
+  });
+
+  /** Загруженные сводки: участки и периоды по каждому файлу, откуда взят каждый месяц */
+  app.get("/api/pbk/files", (_req, res) => {
+    try {
+      const names = fs.existsSync(PBK_DIR)
+        ? fs.readdirSync(PBK_DIR).filter((f) => /\.xlsx?$/i.test(f) && !f.startsWith("~$"))
+        : [];
+      const fromMail = new Set(
+        (pdb.prepare(`SELECT DISTINCT file FROM mail_log WHERE status='принят'`).all() as any[]).map((r) => r.file),
+      );
+      const q = (sql: string, f: string) => pdb.prepare(sql).all(f) as any[];
+      const overlaps = lastOverlaps();
+      const rows = names.map((f) => {
+        const st = fs.statSync(path.join(PBK_DIR, f));
+        const drill = q(`SELECT object, MIN(date) d1, MAX(date) d2, COUNT(*) n, SUM(meters) m FROM pbk_shifts
+                         WHERE source_file=? AND (meters>0 OR TRIM(comment)<>'') GROUP BY object`, f);
+        const prep = q(`SELECT MIN(date) d1, MAX(date) d2, COUNT(*) n, SUM(crushed) c FROM pbk_prep
+                        WHERE source_file=? AND (crushed>0 OR milled>0)`, f).filter((r) => r.n);
+        return {
+          file: f, size: st.size, uploadedAt: st.mtime.toISOString(),
+          source: fromMail.has(f) ? "почта" : "вручную",
+          drill, prep,
+          droppedMonths: overlaps.filter((o) => o.dropped.includes(f)).map((o) => ({ object: o.object, month: o.month, kept: o.kept })),
+          keptMonths: overlaps.filter((o) => o.kept === f).map((o) => ({ object: o.object, month: o.month, instead: o.dropped })),
+        };
+      }).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+      res.json({ rows });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Удалить сводку и пересчитать данные без неё */
+  app.delete("/api/pbk/files/:name", (req, res) => {
+    try {
+      if ((req as any).authUser?.role !== "director") return res.status(403).json({ error: "Удалять сводки может директор" });
+      const name = path.basename(String(req.params.name));
+      const target = path.join(PBK_DIR, name);
+      if (!fs.existsSync(target)) return res.status(404).json({ error: "Файл не найден" });
+      const left = fs.readdirSync(PBK_DIR).filter((f) => /\.xlsx?$/i.test(f) && f !== name);
+      if (!left.length) return res.status(400).json({ error: "Это последняя сводка — удалить нельзя, иначе данные опустеют" });
+      // не стираем совсем: переносим в корзину рядом, чтобы можно было вернуть
+      const trash = path.join(PBK_DIR, "..", "pbk_files_deleted");
+      fs.mkdirSync(trash, { recursive: true });
+      fs.renameSync(target, path.join(trash, `${Date.now()}_${name}`));
+      res.json({ ok: true, report: loadPbkFiles() });
+    } catch (e) { fail(res, e); }
   });
 
   /** Полная очистка реальных данных ПБК: таблицы pbk_* и рабочие таблицы программы. */

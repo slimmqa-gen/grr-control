@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Send, RefreshCw, Save, Mail, History, Plug, Download } from "lucide-react";
+import { Send, RefreshCw, Save, Mail, History, Plug, Download, Upload, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -12,9 +12,9 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, getAuthToken } from "@/lib/queryClient";
 import { Section, Empty, Loading } from "@/components/shell";
-import { nf, downloadFile } from "@/lib/app";
+import { nf, downloadFile, API_BASE } from "@/lib/app";
 
 const ru = (iso: string) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}` : "");
 const dt = (iso: string) => (iso ? new Date(iso).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "");
@@ -504,6 +504,152 @@ export function MailTab() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+/* ============================ Загруженные сводки ============================ */
+
+const MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
+const monthName = (ym: string) => `${MONTHS[Number(ym.slice(5, 7)) - 1] ?? ym} ${ym.slice(0, 4)}`;
+
+export function FilesTab() {
+  const { toast } = useToast();
+  const files = useQuery<any>({ queryKey: ["/api/pbk/files"] });
+  const [busy, setBusy] = useState(false);
+  const [last, setLast] = useState<any>(null);
+  const [confirmDel, setConfirmDel] = useState("");
+
+  const upload = async (list: FileList | null) => {
+    if (!list || !list.length) return;
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      Array.from(list).forEach((f) => fd.append("files", f, f.name));
+      const token = getAuthToken();
+      const res = await fetch(`${API_BASE}/api/pbk/upload`, {
+        method: "POST", body: fd, headers: token ? { "x-auth-token": token } : {},
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out?.error ?? "Не удалось загрузить");
+      setLast(out);
+      queryClient.invalidateQueries();
+      toast({
+        title: out.accepted?.length ? `Добавлено сводок: ${out.accepted.length}` : "Ни одна сводка не принята",
+        description: out.rejected?.length ? `Не принято: ${out.rejected.map((r: any) => r.file).join(", ")}` : "Сводка и аналитика пересчитаны",
+        variant: out.accepted?.length ? undefined : "destructive",
+      });
+    } catch (e: any) {
+      toast({ title: "Ошибка загрузки", description: String(e?.message ?? e), variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const del = useMutation({
+    mutationFn: async (name: string) => (await apiRequest("DELETE", `/api/pbk/files/${encodeURIComponent(name)}`)).json(),
+    onSuccess: () => {
+      setConfirmDel("");
+      queryClient.invalidateQueries();
+      toast({ title: "Сводка убрана, данные пересчитаны", description: "Файл перенесён в корзину на сервере, его можно вернуть." });
+    },
+    onError: (e: any) => toast({ title: "Не удалено", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+
+  const rows: any[] = files.data?.rows ?? [];
+
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Добавить сводки вручную"
+        description="Буровые сводки участков и сводки ЦПП в Excel (.xls, .xlsx), можно сразу несколько"
+        actions={(
+          <label className={`inline-flex cursor-pointer items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground ${busy ? "opacity-60" : ""}`}
+            data-testid="button-files-upload">
+            <Upload className="mr-2 h-4 w-4" />
+            {busy ? "Загружаю…" : "Выбрать файлы"}
+            <input type="file" accept=".xls,.xlsx" multiple className="hidden" disabled={busy}
+              onChange={(e) => { upload(e.target.files); e.currentTarget.value = ""; }} data-testid="input-files-upload" />
+          </label>
+        )}
+      >
+        <div className="grid gap-3 text-xs text-muted-foreground md:grid-cols-3">
+          <div className="rounded-md bg-muted p-3">
+            <b className="text-foreground">Старые периоды.</b> Можно добавить сводку за прошлые месяцы, например Ергожу за
+            март–июль, — она дополнит текущую, и итоги за год станут полными.
+          </div>
+          <div className="rounded-md bg-muted p-3">
+            <b className="text-foreground">Без двойного счёта.</b> Если один месяц участка есть в двух файлах, берётся тот,
+            где месяц заполнен полнее. Какой файл выбран — видно в списке ниже.
+          </div>
+          <div className="rounded-md bg-muted p-3">
+            <b className="text-foreground">То же имя — замена.</b> Файл с тем же именем заменяет прежний. Чужие файлы
+            (не сводки) программа не примет. Сотрудники, вахты и планы при загрузке не меняются.
+          </div>
+        </div>
+        {last && (last.rejected?.length > 0 || last.replaced?.length > 0) && (
+          <div className="mt-3 space-y-1 text-sm" data-testid="box-files-last">
+            {last.replaced?.length > 0 && <div>Заменены прежние версии: {last.replaced.join(", ")}</div>}
+            {last.rejected?.map((r: any) => (
+              <div key={r.file} className="text-red-600 dark:text-red-400">Не принят {r.file}: {r.reason}</div>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section title="Загруженные сводки" description={`Файлов: ${rows.length}. Периоды — по заполненным дням`}>
+        {files.isLoading ? <Loading /> : rows.length === 0 ? <Empty text="Сводок пока нет." /> : (
+          <div className="space-y-2" data-testid="list-files">
+            {rows.map((r) => (
+              <div key={r.file} className="rounded-md border p-3" data-testid={`file-${r.file}`}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{r.file}</span>
+                    <Badge variant="secondary" className="text-[11px]">{r.source}</Badge>
+                    <span className="text-xs text-muted-foreground">загружен {dt(r.uploadedAt)}</span>
+                  </div>
+                  {confirmDel === r.file ? (
+                    <div className="flex items-center gap-2 text-xs">
+                      Убрать сводку и пересчитать?
+                      <Button size="sm" variant="destructive" onClick={() => del.mutate(r.file)} disabled={del.isPending}
+                        data-testid={`button-file-delete-yes-${r.file}`}>Да, убрать</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmDel("")}>Отмена</Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="ghost" onClick={() => setConfirmDel(r.file)} data-testid={`button-file-delete-${r.file}`}>
+                      <Trash2 className="mr-1 h-4 w-4" />Убрать
+                    </Button>
+                  )}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                  {r.drill.map((d: any) => (
+                    <span key={d.object} className="rounded bg-muted px-2 py-1">
+                      <b>{d.object}</b>: {ru(d.d1)} — {ru(d.d2)} · {nf(Math.round(d.m))} м
+                    </span>
+                  ))}
+                  {r.prep.map((p: any, i: number) => (
+                    <span key={`p${i}`} className="rounded bg-muted px-2 py-1">
+                      <b>ЦПП</b>: {ru(p.d1)} — {ru(p.d2)} · дроблено {nf(p.c)}
+                    </span>
+                  ))}
+                  {!r.drill.length && !r.prep.length && <span className="text-muted-foreground">бурения и ЦПП в файле нет или все месяцы взяты из других файлов</span>}
+                </div>
+                {r.droppedMonths.length > 0 && (
+                  <div className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                    Не учтены, потому что полнее в другом файле:{" "}
+                    {r.droppedMonths.map((m: any) => `${m.object}, ${monthName(m.month)} (взят из ${m.kept})`).join("; ")}
+                  </div>
+                )}
+                {r.keptMonths.length > 0 && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Этот файл выбран для: {r.keptMonths.map((m: any) => `${m.object}, ${monthName(m.month)}`).join("; ")}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </Section>

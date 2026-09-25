@@ -53,6 +53,64 @@ function insertPlanLines(rows: any[]) {
   return rows.length;
 }
 
+/* ---------- пересечения сводок ---------- */
+
+export type Overlap = { table: string; object: string; month: string; kept: string; dropped: string[] };
+
+/**
+ * Если один и тот же месяц одного участка есть в нескольких файлах
+ * (например, старая сводка Ергожу за март–июль и текущая за июль–сентябрь),
+ * берём месяц только из одного файла — где он заполнен полнее.
+ * При равенстве — из файла, загруженного позже. Иначе июль считался бы дважды.
+ */
+function dedupeByMonth(results: ParseResult[], dir: string): Overlap[] {
+  const mtime = (f: string) => { try { return fs.statSync(path.join(dir, f)).mtimeMs; } catch { return 0; } };
+  const rules: Array<{ table: string; objectOf: (r: any) => string; filled: (r: any) => boolean }> = [
+    { table: "pbk_shifts", objectOf: (r) => String(r.object ?? ""), filled: (r) => Number(r.meters) > 0 || String(r.comment ?? "").trim() !== "" },
+    { table: "pbk_prep", objectOf: () => "ЦПП", filled: (r) => Number(r.crushed) > 0 || Number(r.milled) > 0 },
+    { table: "pbk_geo", objectOf: (r) => String(r.object ?? ""), filled: (r) => Number(r.length_m) > 0 },
+  ];
+  const overlaps: Overlap[] = [];
+  for (const rule of rules) {
+    // ключ «участок|месяц» → файл → заполненные дни
+    const score = new Map<string, Map<string, Set<string>>>();
+    for (const res of results) {
+      for (const r of res.entities[rule.table] ?? []) {
+        const month = String(r.date ?? "").slice(0, 7);
+        if (!month) continue;
+        const key = `${rule.objectOf(r)}|${month}`;
+        if (!score.has(key)) score.set(key, new Map());
+        const byFile = score.get(key)!;
+        if (!byFile.has(res.file)) byFile.set(res.file, new Set());
+        if (rule.filled(r)) byFile.get(res.file)!.add(String(r.date));
+      }
+    }
+    const winner = new Map<string, string>();
+    for (const [key, byFile] of score) {
+      const files = Array.from(byFile.keys());
+      if (files.length < 2) { winner.set(key, files[0]); continue; }
+      files.sort((a, b) => (byFile.get(b)!.size - byFile.get(a)!.size) || (mtime(b) - mtime(a)));
+      winner.set(key, files[0]);
+      const [object, month] = key.split("|");
+      overlaps.push({ table: rule.table, object, month, kept: files[0], dropped: files.slice(1) });
+    }
+    for (const res of results) {
+      const rows = res.entities[rule.table];
+      if (!rows?.length) continue;
+      res.entities[rule.table] = rows.filter((r: any) => {
+        const month = String(r.date ?? "").slice(0, 7);
+        if (!month) return true;
+        return winner.get(`${rule.objectOf(r)}|${month}`) === res.file;
+      });
+    }
+  }
+  return overlaps;
+}
+
+export function lastOverlaps(): Overlap[] {
+  try { return JSON.parse(storage.getSetting("pbk_overlaps") || "[]"); } catch { return []; }
+}
+
 export type LoadReport = {
   org: string;
   files: Array<{
@@ -97,6 +155,9 @@ export function loadPbkFiles(dir = PBK_DIR): LoadReport {
       results.push({ file: f, profiles: [], entities: {}, sheets: [{ sheet: "-", profile: "", profileName: "ошибка", loaded: 0, skipped: 0, notes: [String(e?.message ?? e)] }], loaded: 0, skipped: 0, notes: [String(e?.message ?? e)] });
     }
   }
+
+  const overlaps = dedupeByMonth(results, dir);
+  storage.setSetting("pbk_overlaps", JSON.stringify(overlaps));
 
   clearPbkData();
   seedReasons();

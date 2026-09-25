@@ -19,7 +19,7 @@ import { PageHeader, Section, Empty, Loading, ErrorBox, TableWrap } from "@/comp
 import { nf, money, pct, ruDate, levelText, type Level } from "@/lib/app";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { DailyTab, MailTab } from "./pbk-daily";
+import { DailyTab, MailTab, FilesTab } from "./pbk-daily";
 
 const TABLES: Array<{ code: string; label: string }> = [
   { code: "pbk_shifts", label: "Смены бурения" },
@@ -172,6 +172,7 @@ export default function PbkPage() {
       <Tabs defaultValue="daily">
         <TabsList className="flex w-full flex-wrap justify-start">
           <TabsTrigger value="daily" data-testid="tab-daily">Суточная сводка</TabsTrigger>
+          <TabsTrigger value="sources" data-testid="tab-sources">Сводки</TabsTrigger>
           <TabsTrigger value="mail" data-testid="tab-mail">Почта</TabsTrigger>
           <TabsTrigger value="chain" data-testid="tab-chain">{finance ? "Зависшая выручка" : "Отставание переделов"}</TabsTrigger>
           <TabsTrigger value="loss" data-testid="tab-loss">Смены и потери</TabsTrigger>
@@ -184,6 +185,7 @@ export default function PbkPage() {
 
         {/* ---------- цепочка ---------- */}
         <TabsContent value="daily" className="mt-4"><DailyTab /></TabsContent>
+        <TabsContent value="sources" className="mt-4"><FilesTab /></TabsContent>
         <TabsContent value="mail" className="mt-4"><MailTab /></TabsContent>
 
         <TabsContent value="chain" className="mt-3 space-y-4">
