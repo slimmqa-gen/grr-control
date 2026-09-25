@@ -112,7 +112,7 @@ function addDaysIso(iso: string, days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-type Status = "onshift" | "between" | "none" | "vacation" | "sick" | "trip" | "study";
+type Status = "onshift" | "between" | "none" | "office" | "pp" | "vacation" | "sick" | "trip" | "study";
 const MANUAL_STATUSES: Status[] = ["vacation", "sick", "trip", "study", "between"];
 
 /** Метод работы сотрудника — выбирается кнопкой прямо в списке */
@@ -127,6 +127,8 @@ const STATUS_TEXT: Record<Status, string> = {
   onshift: "На вахте",
   between: "На межвахте",
   none: "Вахта не назначена",
+  office: "Работа в офисе",
+  pp: "Работа на ПП",
   vacation: "Отпуск",
   sick: "Больничный",
   trip: "Командировка",
@@ -136,6 +138,8 @@ const STATUS_LEVEL: Record<Status, Level> = {
   onshift: "ok",
   between: "warn",
   none: "bad",
+  office: "ok",
+  pp: "ok",
   vacation: "warn",
   sick: "warn",
   trip: "warn",
@@ -228,15 +232,20 @@ export default function Crew() {
    * Статус на сегодня. Ручной статус действует только пока его подтверждает
    * запись об отсутствии, иначе завершённый больничный навсегда перекрывает вахту.
    */
-  const statusOf = (empId: number, manualStatus?: string): Status => {
+  const statusOf = (empId: number, manualStatus?: string, workStatus?: string): Status => {
     const ownEvents = empAllEvents.filter((ev: any) => ev.employeeId === empId);
     const covering = ownEvents.find((ev: any) => ev.startDate <= today && ev.endDate >= today);
     if (covering && (MANUAL_STATUSES as string[]).includes(covering.kind)) return covering.kind as Status;
     if (!ownEvents.length && manualStatus && (MANUAL_STATUSES as string[]).includes(manualStatus))
       return manualStatus as Status;
     const own = allShifts.filter((s) => s.employeeId === empId);
-    if (!own.length) return "none";
-    return own.some((s) => s.startDate <= today && s.endDate >= today) ? "onshift" : "between";
+    // разовая вахта у офисного сотрудника тоже показывается как «На вахте»
+    if (own.some((s) => s.startDate <= today && s.endDate >= today)) return "onshift";
+    // офис и ПП не работают вахтами: «Вахта не назначена» для них не имеет смысла
+    const method = workStatus || "office";
+    if (method === "office") return "office";
+    if (method === "pp") return "pp";
+    return own.length ? "between" : "none";
   };
 
   const absenceAll = useMemo(() => {
@@ -337,7 +346,7 @@ export default function Crew() {
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return emps
-      .map((e) => ({ ...e, status: statusOf(e.id, e.manualStatus) as Status }))
+      .map((e) => ({ ...e, status: statusOf(e.id, e.manualStatus, e.workStatus) as Status }))
       .filter((e: any) =>
         (!needle || String(e.fio).toLowerCase().includes(needle)) &&
         (objectFilter === "all" || (objectFilter === NO_OBJECT ? !e.objectId : e.objectId === Number(objectFilter))) &&
@@ -350,12 +359,13 @@ export default function Crew() {
   }, [emps, allShifts, empAllEvents, q, objectFilter, positionFilter, statusFilter, medFilter, today]);
 
   const counters = useMemo(() => {
-    const all = emps.map((e) => statusOf(e.id, e.manualStatus));
+    const all = emps.map((e) => statusOf(e.id, e.manualStatus, e.workStatus));
     return {
       total: emps.length,
       onshift: all.filter((s) => s === "onshift").length,
       between: all.filter((s) => s === "between").length,
       none: all.filter((s) => s === "none").length,
+      office: all.filter((s) => s === "office" || s === "pp").length,
     };
   }, [emps, allShifts, empAllEvents, today]);
 
@@ -1327,7 +1337,7 @@ export default function Crew() {
               label="Вахта не назначена"
               value={nf(counters.none)}
               level={counters.none === 0 ? "ok" : "warn"}
-              hint="Отметьте людей и назначьте вахту"
+              hint="Только вахтовый метод. Офис и ПП сюда не входят"
               onClick={() => showPeople("none")} active={statusFilter === "none"}
             />
           </div>
@@ -1377,6 +1387,8 @@ export default function Crew() {
                     <SelectItem value="onshift">На вахте</SelectItem>
                     <SelectItem value="between">На межвахте</SelectItem>
                     <SelectItem value="none">Вахта не назначена</SelectItem>
+                    <SelectItem value="office">Работа в офисе</SelectItem>
+                    <SelectItem value="pp">Работа на ПП</SelectItem>
                     <SelectItem value="vacation">Отпуск</SelectItem>
                     <SelectItem value="sick">Больничный</SelectItem>
                     <SelectItem value="trip">Командировка</SelectItem>

@@ -186,9 +186,12 @@ export async function buildWorkbook(sheets: SheetKey[]): Promise<ExcelJS.Workboo
       const allShifts = storage.shifts();
       storage.employees().forEach((e) => {
         const own = allShifts.filter((s2) => s2.employeeId === e.id);
-        const st = own.length === 0
-          ? "вахта не назначена"
-          : own.some((s2) => s2.startDate <= today && s2.endDate >= today) ? "на вахте" : "на межвахте";
+        const method = (e as any).workStatus || "office";
+        const st = own.some((s2) => s2.startDate <= today && s2.endDate >= today)
+          ? "на вахте"
+          : method === "office" ? "работа в офисе"
+          : method === "pp" ? "работа на ПП"
+          : own.length === 0 ? "вахта не назначена" : "на межвахте";
         ws3.addRow({ f: e.fio, p: e.position, o: objName(e.objectId) || "не указан", t: e.phone, st });
       });
     }
