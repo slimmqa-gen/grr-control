@@ -28,7 +28,7 @@ const req = (m) => require(path.join(APP, "node_modules", m));
   const m = setting("mail");
   if (!Object.keys(m).length) console.log("Почта ни разу не настраивалась (настроек нет).");
   else {
-    console.log(`Включена (каждый час): ${m.enabled ? "да" : "НЕТ"}`);
+    console.log(`Включена: ${m.enabled ? "да" : "НЕТ"} · забирать каждые ${m.intervalMin || 60} мин`);
     console.log(`Ящик: ${m.user || "НЕ УКАЗАН"} · сервер ${m.host}:${m.port} · папка ${m.folder} · смотреть писем за ${m.days} дн.`);
     console.log(`Пароль приложения: ${m.password ? "задан" : "НЕ ЗАДАН"}`);
     console.log(`Адреса отправителей: ${m.senders || "СПИСОК ПУСТ"}`);

@@ -471,7 +471,7 @@ export async function sendDailyNow(date = defaultReportDate(), chatIds?: string[
  * В окне рассылки — отправить сводку за сутки. После утренней отправки —
  * сообщить об изменениях, если они появились.
  */
-export async function hourlyTick(force = false, mailNow = false) {
+export async function hourlyTick(force = false, mailNow = false, mailAgain = false) {
   const st = dailySettings();
   const now = localNow(st.tz);
   const hourKey = `${now.date} ${now.hour}`;
@@ -482,7 +482,7 @@ export async function hourlyTick(force = false, mailNow = false) {
 
   let mail: any = null;
   try {
-    if (wantMail) mail = await checkMail();
+    if (wantMail) mail = await checkMail(mailAgain);
   } catch (e) {
     mail = { error: String((e as Error)?.message ?? e) };
   }

@@ -356,7 +356,7 @@ export function registerPbkRoutes(app: Express) {
     try {
       if (!isDirector(req)) return res.status(403).json({ error: "Проверка почты — у директора" });
       // ручная проверка: забрать почту и сразу пересчитать суточную сводку
-      const out: any = await hourlyTick(true, true);
+      const out: any = await hourlyTick(true, true, !!req.body?.again);
       if (out.mail?.error) return res.status(400).json({ error: out.mail.error });
       res.json({ ...(out.mail ?? {}), snapshot: out.snapshot, isNew: out.isNew });
     } catch (e) { fail(res, e); }

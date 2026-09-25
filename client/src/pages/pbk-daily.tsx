@@ -470,7 +470,7 @@ export function MailTab() {
   });
 
   const check = useMutation({
-    mutationFn: async () => (await apiRequest("POST", "/api/pbk/mail/check", {})).json(),
+    mutationFn: async (again: boolean = false) => (await apiRequest("POST", "/api/pbk/mail/check", { again })).json(),
     onSuccess: (d: any) => {
       queryClient.invalidateQueries();
       toast({
@@ -625,9 +625,15 @@ export function MailTab() {
         title="Журнал почты"
         description={form.lastCheck ? `Последняя проверка ${dt(form.lastCheck)}: ${form.lastResult}` : "Проверок ещё не было"}
         actions={(
-          <Button size="sm" variant="outline" onClick={() => check.mutate()} disabled={check.isPending} data-testid="button-mail-check">
-            <Mail className={`mr-2 h-4 w-4 ${check.isPending ? "animate-pulse" : ""}`} />Забрать почту сейчас
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={() => check.mutate(false)} disabled={check.isPending} data-testid="button-mail-check">
+              <Mail className={`mr-2 h-4 w-4 ${check.isPending ? "animate-pulse" : ""}`} />Забрать почту сейчас
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => check.mutate(true)} disabled={check.isPending} data-testid="button-mail-again"
+              title="Взять все письма за период заново, даже если они уже были обработаны">
+              <RefreshCw className="mr-2 h-4 w-4" />Забрать заново за {form.days} дн.
+            </Button>
+          </div>
         )}
       >
         {(log.data?.rows ?? []).length === 0 ? <Empty text="Писем от ваших адресов ещё не было." /> : (

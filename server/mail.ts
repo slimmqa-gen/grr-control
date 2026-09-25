@@ -213,9 +213,10 @@ function hasExcelPart(node: any): boolean {
  * Забрать новые сводки из ящика. Возвращает, сколько файлов принято;
  * если принят хоть один — пересобирает данные сводок.
  */
-export async function checkMail(): Promise<MailCheckResult> {
+/** again=true — забрать письма за период заново, не глядя в журнал */
+export async function checkMail(again = false): Promise<MailCheckResult> {
   try {
-    return await checkMailInner();
+    return await checkMailInner(again);
   } catch (e) {
     const text = mailErrorText(e);
     saveMailSettings({ lastCheck: new Date().toISOString(), lastError: text, lastResult: `ошибка: ${text}` });
@@ -223,7 +224,7 @@ export async function checkMail(): Promise<MailCheckResult> {
   }
 }
 
-async function checkMailInner(): Promise<MailCheckResult> {
+async function checkMailInner(again: boolean): Promise<MailCheckResult> {
   const s = mailSettings();
   const allowed = senderList(s.senders);
   const at = new Date().toISOString();
@@ -240,8 +241,20 @@ async function checkMailInner(): Promise<MailCheckResult> {
   const logRow = pdb.prepare(`INSERT INTO mail_log
     (checked_at, uid, message_id, from_addr, subject, received_at, file, sha256, status, note)
     VALUES (?,?,?,?,?,?,?,?,?,?)`);
-  const seenSha = pdb.prepare(`SELECT 1 x FROM mail_log WHERE sha256=? AND status IN ('принят','без изменений') LIMIT 1`);
-  const seenMsg = pdb.prepare(`SELECT 1 x FROM mail_log WHERE message_id=? LIMIT 1`);
+  // Письмо считается обработанным, только если его сводки на месте.
+  // Если файл удалили на вкладке «Сводки» — письмо заберётся заново.
+  const msgRows = pdb.prepare(`SELECT file, status FROM mail_log WHERE message_id=?`);
+  const seenMsg = (id: string): boolean => {
+    if (again) return false;
+    const rows = msgRows.all(id) as { file: string; status: string }[];
+    if (!rows.length) return false;
+    return rows.every((r) => !["принят", "без изменений", "устарела", "есть новее"].includes(r.status)
+      || (r.file && fs.existsSync(path.join(FILES_DIR, r.file))));
+  };
+  const shaOf = (file: string): string => {
+    try { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); } catch { return ""; }
+  };
+  const takenNow = new Set<string>();
 
   await client.connect();
   try {
@@ -269,13 +282,15 @@ async function checkMailInner(): Promise<MailCheckResult> {
             continue;
           }
           const messageId = String(msg.envelope?.messageId ?? `uid-${msg.uid}`);
-          if (seenMsg.get(messageId)) continue;
+          if (seenMsg(messageId)) continue;
           wanted.push({
             uid: msg.uid, from, subject: String(msg.envelope?.subject ?? ""),
             date: msg.envelope?.date ? new Date(msg.envelope.date).toISOString() : "", messageId,
           });
         }
       }
+      // сначала самые свежие письма: из нескольких писем с одним файлом берётся новое
+      wanted.sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.uid - a.uid);
       res.fromAllowed = wanted.length;
       res.others = Array.from(others.values()).sort((a, b) => b.count - a.count);
 
@@ -300,9 +315,16 @@ async function checkMailInner(): Promise<MailCheckResult> {
           const sha = crypto.createHash("sha256").update(buf).digest("hex");
           fs.writeFileSync(path.join(archiveDir, `${w.uid}_${name}`), buf);
 
-          if (seenSha.get(sha)) {
+          const target = path.join(FILES_DIR, name);
+          if (takenNow.has(name.toLowerCase())) {
             res.skipped++;
-            logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, name, sha, "без изменений", "такой же файл уже принят");
+            logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, name, sha, "есть новее", "этот файл уже взят из более нового письма");
+            continue;
+          }
+          if (fs.existsSync(target) && shaOf(target) === sha) {
+            res.skipped++;
+            takenNow.add(name.toLowerCase());
+            logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, name, sha, "без изменений", "такой же файл уже в программе");
             continue;
           }
           let parsedOk = false;
@@ -324,7 +346,6 @@ async function checkMailInner(): Promise<MailCheckResult> {
             continue;
           }
           // старое письмо не должно затирать более свежую сводку с тем же именем
-          const target = path.join(FILES_DIR, name);
           if (fs.existsSync(target)) {
             let oldLast = "";
             try { oldLast = lastFilledDate(parseWorkbook(fs.readFileSync(target), name)); } catch { oldLast = ""; }
@@ -336,6 +357,7 @@ async function checkMailInner(): Promise<MailCheckResult> {
             }
           }
           fs.writeFileSync(target, buf);
+          takenNow.add(name.toLowerCase());
           res.accepted++;
           logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, name, sha, "принят", note);
           res.details.push(`${name} от ${w.from}`);
