@@ -6,6 +6,7 @@ import { pdb, seedReasons, reasonList, PBK_TABLES, pbkCounts, clearPbkData } fro
 import { PBK_PROFILES, parseWorkbook } from "./pbkparse";
 import { loadPbkFiles, PBK_DIR, ORG_NAME, lastOverlaps } from "./pbkload";
 import path from "path";
+import crypto from "crypto";
 import { pbkAnalytics, reclassifyShifts, rates, factRevenue, hangingRevenue } from "./pbkecon";
 import { storage, restoreDemoData } from "./storage";
 import {
@@ -127,6 +128,37 @@ export function registerPbkRoutes(app: Express) {
       const report = accepted.length ? loadPbkFiles() : null;
       res.json({ ...(report ?? {}), accepted, replaced, rejected, overlaps: lastOverlaps() });
     } catch (e) { fail(res, e, 500); }
+  });
+
+  /** Откуда взяты последние данные по каждому участку и ЦПП */
+  app.get("/api/pbk/sources", (_req, res) => {
+    try {
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Krasnoyarsk" });
+      const days = (d: string) => (d ? Math.round((Date.parse(today) - Date.parse(d)) / 86400000) : null);
+      const fileInfo = (file: string) => {
+        const full = path.join(PBK_DIR, file);
+        if (!file || !fs.existsSync(full)) return { exists: false, source: "файла уже нет", from: "", at: "" };
+        const buf = fs.readFileSync(full);
+        const sha = crypto.createHash("sha256").update(buf).digest("hex");
+        // письмо, из которого пришла именно эта версия файла
+        const mail = pdb.prepare(
+          `SELECT from_addr, subject, received_at, checked_at FROM mail_log WHERE sha256=? AND status='принят' ORDER BY id DESC LIMIT 1`,
+        ).get(sha) as any;
+        if (mail) return { exists: true, source: "почта", from: mail.from_addr, subject: mail.subject, at: mail.received_at || mail.checked_at };
+        return { exists: true, source: "вручную", from: "", subject: "", at: fs.statSync(full).mtime.toISOString() };
+      };
+      const drill = (pdb.prepare(`SELECT DISTINCT object FROM pbk_shifts WHERE object<>'' ORDER BY object`).all() as any[]).map((r) => {
+        const last = pdb.prepare(
+          `SELECT date, source_file FROM pbk_shifts WHERE object=? AND (meters>0 OR TRIM(comment)<>'') ORDER BY date DESC LIMIT 1`,
+        ).get(r.object) as any;
+        return { object: r.object, kind: "бурение", lastDate: last?.date ?? "", daysAgo: days(last?.date ?? ""), file: last?.source_file ?? "", ...fileInfo(last?.source_file ?? "") };
+      });
+      const p = pdb.prepare(
+        `SELECT date, source_file FROM pbk_prep WHERE crushed>0 OR milled>0 ORDER BY date DESC LIMIT 1`,
+      ).get() as any;
+      const prep = p ? [{ object: "ЦПП", kind: "пробоподготовка", lastDate: p.date, daysAgo: days(p.date), file: p.source_file, ...fileInfo(p.source_file) }] : [];
+      res.json({ today, rows: [...drill, ...prep] });
+    } catch (e) { fail(res, e); }
   });
 
   /** Загруженные сводки: участки и периоды по каждому файлу, откуда взят каждый месяц */

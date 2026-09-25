@@ -560,9 +560,58 @@ export function FilesTab() {
   });
 
   const rows: any[] = files.data?.rows ?? [];
+  const src = useQuery<any>({ queryKey: ["/api/pbk/sources"] });
 
   return (
     <div className="space-y-4">
+      <Section
+        title="Откуда последние данные по участкам"
+        description="Последний заполненный день, файл и как он попал в программу"
+      >
+        {src.isLoading ? <Loading /> : (src.data?.rows ?? []).length === 0 ? <Empty text="Сводок пока нет." /> : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[600px] text-sm" data-testid="table-sources">
+              <thead>
+                <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th className="py-2 pr-2">Участок</th>
+                  <th className="py-2 pr-2">Последние данные</th>
+                  <th className="py-2 pr-2">Файл</th>
+                  <th className="py-2">Откуда и когда</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(src.data?.rows ?? []).map((r: any) => {
+                  const late = r.daysAgo === null ? "bad" : r.daysAgo <= 1 ? "ok" : r.daysAgo <= 3 ? "warn" : "bad";
+                  const cls = late === "ok" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                    : late === "warn" ? "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300"
+                    : "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300";
+                  return (
+                    <tr key={r.object} className="border-b" data-testid={`source-${r.object}`}>
+                      <td className="py-2 pr-2 font-medium">{r.object}<div className="text-xs font-normal text-muted-foreground">{r.kind}</div></td>
+                      <td className="py-2 pr-2">
+                        <span className={`rounded px-2 py-0.5 text-xs font-medium ${cls}`}>
+                          {r.lastDate ? ru(r.lastDate) : "нет"}
+                        </span>
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          {r.daysAgo === null ? "" : r.daysAgo <= 0 ? "сегодня" : r.daysAgo === 1 ? "вчера" : `${r.daysAgo} дн. назад`}
+                        </div>
+                      </td>
+                      <td className="max-w-[220px] break-all py-2 pr-2 text-xs">{r.file || "—"}</td>
+                      <td className="py-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={r.source === "почта" ? "default" : "secondary"} className="text-[11px]">{r.source}</Badge>
+                          <span className="text-xs text-muted-foreground">{dt(r.at)}</span>
+                        </div>
+                        {r.from && <div className="mt-0.5 text-xs text-muted-foreground">от {r.from}{r.subject ? ` · «${r.subject}»` : ""}</div>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
       <Section
         title="Добавить сводки вручную"
         description="Буровые сводки участков и сводки ЦПП в Excel (.xls, .xlsx), можно сразу несколько"
