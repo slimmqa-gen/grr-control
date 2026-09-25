@@ -393,12 +393,19 @@ export type MaxSettings = {
   notifyConfirm: boolean;
   /** дублировать такие оповещения СМС на телефоны ответственных */
   duplicateSms: boolean;
+  /**
+   * Показывать текст личных сообщений сотрудников всем ответственным.
+   * Выключено: текст видит только тот, кто ведёт переписку с человеком;
+   * остальным — только уведомление без текста с кнопкой «Взять и прочитать».
+   */
+  shareMessages: boolean;
 };
 export const DEFAULT_MAX_SETTINGS: MaxSettings = {
   enabled: false, token: "", botName: "", marker: 0,
   mode: "poll", webhookUrl: "", webhookSecret: "", webhookAt: "", lastEventAt: "",
   reportEnabled: false, reportChatIds: "", reportHour: 18, reportLastDate: "",
   notifyDecline: true, notifyMessage: true, notifyConfirm: false, duplicateSms: false,
+  shareMessages: false,
 };
 
 /** Журнал СМС-уведомлений: что, кому и когда отправлено */

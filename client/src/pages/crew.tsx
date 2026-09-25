@@ -3078,6 +3078,19 @@ export default function Crew() {
                     </label>
                     <label className="flex items-center gap-2 text-sm">
                       <Checkbox
+                        checked={!!maxF.shareMessages}
+                        onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, shareMessages: v })}
+                        data-testid="check-share-messages"
+                      />
+                      Показывать текст личных сообщений всем ответственным
+                    </label>
+                    <div className="ml-6 text-xs text-muted-foreground">
+                      Выключено (рекомендуется): текст видит только тот, кто ведёт переписку с сотрудником.
+                      Остальным приходит уведомление без текста — кто первым нажмёт «Взять и прочитать», тот и ведёт переписку.
+                      В групповых чатах бот не отвечает и ничего не пересылает.
+                    </div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
                         checked={!!maxF.notifyConfirm}
                         onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, notifyConfirm: v })}
                         data-testid="check-notify-confirm"
