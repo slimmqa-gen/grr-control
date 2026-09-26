@@ -315,7 +315,7 @@ export function eventsOverviewText() {
 }
 
 /** Сообщение с кнопками для руководителя */
-async function sendMaxMenu(
+export async function sendMaxMenu(
   chatId: string, text: string, buttons: { text: string; payload: string }[][], format?: "html" | "markdown",
 ) {
   // длинный текст режем по строкам, кнопки — к последней части
@@ -382,9 +382,26 @@ async function sendCrew(chatId: string, group?: string) {
 
 /** Руководитель ли это: только им доступны статус и итоги */
 function isResponsible(chatId: string) {
-  const allowed = String(maxSettings().reportChatIds ?? "")
+  const s = maxSettings();
+  const allowed = `${s.reportChatIds ?? ""},${s.directorChatIds ?? ""}`
     .split(",").map((x) => x.trim()).filter(Boolean);
   return !!chatId && allowed.includes(chatId);
+}
+
+/** Команды руководителя по кнопкам меню */
+export async function runLeaderCommand(chatId: string, cmd: "crew" | "callout" | "events") {
+  if (!isResponsible(chatId)) { await sendMax(chatId, "Эта информация доступна только руководителям."); return; }
+  if (cmd === "crew") return sendCrew(chatId);
+  if (cmd === "callout") {
+    const { calloutDigestText } = await import("./sms");
+    await sendMaxMenu(chatId, calloutDigestText(), [[{ text: "Назад к статусу", payload: "st:menu" }]]);
+    return;
+  }
+  const ev = eventsOverviewText();
+  await sendMaxMenu(chatId, ev.text, ev.ids.slice(0, 8).map((id) => {
+    const e = storage.maxEvent(id);
+    return [{ text: String(e?.title || e?.text || `Событие ${id}`).slice(0, 40), payload: `st:ev:${id}` }];
+  }));
 }
 
 /** Короткая сводка по событию для ответственных */
@@ -452,6 +469,22 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
   if (callbackPayload) {
     const [action, shiftRaw] = callbackPayload.split(":");
     const shiftId = Number(shiftRaw) || 0;
+
+    // плашки главного меню
+    if (action === "m") {
+      if (callbackId) {
+        try {
+          await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+            method: "POST", body: JSON.stringify({ notification: "Секунду…" }),
+          });
+        } catch { /* не критично */ }
+      }
+      const { handleMenu } = await import("./maxmenu");
+      try { await handleMenu(chatId, String(shiftRaw ?? "")); } catch (e) {
+        await sendMax(chatId, `Не получилось: ${String((e as Error)?.message ?? e)}`);
+      }
+      return { linked, replies };
+    }
 
     // кнопки меню статуса у руководителя
     if (action === "st") {
@@ -671,6 +704,8 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
           text: "Готово: уведомления о вахте будут приходить сюда. Отвечать можно прямо в этом чате.",
         }),
       });
+      const { sendMainMenu } = await import("./maxmenu");
+      await sendMainMenu(chatId);
     } catch {
       // приветствие не критично
     }
@@ -740,15 +775,32 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
 
   // 6. запрос сводки: доступен только тем, кому разрешена рассылка сводок
   const cmd = text.trim().toLowerCase().replace(/^\//, "");
+  // главное меню с плашками: по команде или при первом запуске бота
+  if (/^(меню|menu|start|начать|помощь|help|кнопки)$/.test(cmd) || (type === "bot_started" && !text)) {
+    const { sendMainMenu } = await import("./maxmenu");
+    await sendMainMenu(chatId);
+    return { linked, replies };
+  }
+  if (/^(мой заезд|моя вахта|когда заезд|когда вахта)$/.test(cmd)) {
+    const { handleMenu } = await import("./maxmenu");
+    await handleMenu(chatId, "myshift");
+    return { linked, replies };
+  }
+  if (/^(смена вахт|смена|пересменка)$/.test(cmd)) {
+    const { handleMenu } = await import("./maxmenu");
+    await handleMenu(chatId, "rotation");
+    return { linked, replies };
+  }
   // производственная сводка: тем, кого отметили получателями сводки, и ответственным
   if (/^(сводка|бурение|суточная|производство|люди|бурильщики|по людям)$/.test(cmd)) {
-    const { dailySettings, dailySummary, summaryHtml, workersHtml } = await import("./daily");
-    const receivers = dailySettings().chatIds.split(",").map((x) => x.trim()).filter(Boolean);
-    // только те, кого отметили получателями сводки: ответственные за вахты
-    // и остальные сотрудники её не получают, даже если попросят
-    if (chatId && receivers.includes(chatId)) {
+    const { dailySummary, summaryHtml, workersHtml } = await import("./daily");
+    const { maySeeSummary, isMasterChat } = await import("./maxmenu");
+    // директор, ответственные, получатели сводки и буровые мастера на вахте
+    // (на межвахте — только с разрешения директора); остальным недоступна
+    const people = /^(люди|бурильщики|по людям)$/.test(cmd);
+    const ok = await maySeeSummary(chatId) && !(people && isMasterChat(chatId) && !isResponsible(chatId));
+    if (chatId && ok) {
       try {
-        const people = /^(люди|бурильщики|по людям)$/.test(cmd);
         const text = people ? workersHtml(dailySummary()) : summaryHtml(dailySummary());
         const { sendToRecipients } = await import("./daily");
         await sendToRecipients(text, [chatId], "html");
@@ -756,7 +808,10 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
         await sendMax(chatId, `Сводку собрать не удалось: ${String((e as Error)?.message ?? e)}`);
       }
     } else if (chatId) {
-      await sendMax(chatId, "Производственная сводка вам недоступна. Если она нужна — обратитесь к руководителю.");
+      const { isMasterChat: im } = await import("./maxmenu");
+      await sendMax(chatId, im(chatId)
+        ? "Вы сейчас на межвахте — сводка недоступна. Разрешение даёт руководитель."
+        : "Производственная сводка вам недоступна. Если она нужна — обратитесь к руководителю.");
     }
     return { linked, replies };
   }
@@ -773,7 +828,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     }
     return { linked, replies };
   }
-  const isStatus = /^(статус|status|меню|menu)$/.test(cmd);
+  const isStatus = /^(статус|status)$/.test(cmd);
   const isCallout = /^(заезд|заезды|вахта|вахты)$/.test(cmd);
   const isEvents = /^(события|опросы|событие|опрос)$/.test(cmd);
   if (isStatus || isCallout || isEvents) {
@@ -802,8 +857,8 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
 
   // 7. ответственный пишет боту не команду — никому не пересылаем
   if (text && type !== "bot_started" && isResponsible(chatId)) {
-    await sendMax(chatId,
-      "Это сообщение никому не переслано. Команды: «статус», «кто где», «заезды», «события», «сводка», «люди».\n"
+    const { sendMainMenu } = await import("./maxmenu");
+    await sendMainMenu(chatId, "Это сообщение никому не переслано. Выберите команду кнопкой.\n"
       + "Чтобы написать сотруднику — нажмите «Ответить» под его сообщением.");
     return { linked, replies };
   }
@@ -816,6 +871,10 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     });
     replies++;
     void notifyPrivateMessage(employeeId, userName, text, chatId, Number(inbox?.id) || 0);
+    try {
+      const { sendMainMenu } = await import("./maxmenu");
+      await sendMainMenu(chatId, "✅ Сообщение передано руководителю.");
+    } catch { /* не критично */ }
   }
   return { linked, replies };
 }

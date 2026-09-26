@@ -400,6 +400,14 @@ export type MaxSettings = {
   messageChatIds: string;
   /** Кому из пользователей программы открыт раздел «Переписка» (id через запятую). Директору — всегда */
   chatUserIds: string;
+  /** Профили MAX директора: доступны все команды */
+  directorChatIds: string;
+  /** Буровые мастера: сводка всех участков (на вахте) и смена вахт своего участка */
+  masterChatIds: string;
+  /** Мастера, которым сводка доступна и на межвахте — с разрешения директора */
+  masterOffAllowed: string;
+  /** Сообщать сотруднику, что его вахту перенесли или отменили */
+  notifyShiftChanges: boolean;
 };
 export const DEFAULT_MAX_SETTINGS: MaxSettings = {
   enabled: false, token: "", botName: "", marker: 0,
@@ -407,6 +415,7 @@ export const DEFAULT_MAX_SETTINGS: MaxSettings = {
   reportEnabled: false, reportChatIds: "", reportHour: 18, reportLastDate: "",
   notifyDecline: true, notifyMessage: true, notifyConfirm: false, duplicateSms: false,
   messageChatIds: "", chatUserIds: "",
+  directorChatIds: "", masterChatIds: "", masterOffAllowed: "", notifyShiftChanges: true,
 };
 
 /** Журнал СМС-уведомлений: что, кому и когда отправлено */

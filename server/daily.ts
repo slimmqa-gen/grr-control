@@ -522,7 +522,12 @@ function chunks(text: string, size = 3500): string[] {
 
 export async function sendToRecipients(text: string, chatIds?: string[], format?: "html") {
   const { sendMax } = await import("./max");
-  const ids = chatIds ?? dailySettings().chatIds.split(",").map((x) => x.trim()).filter(Boolean);
+  let ids = chatIds;
+  if (!ids) {
+    // получатели сводки + буровые мастера на вахте (на межвахте — с разрешения)
+    const { mastersForMorning } = await import("./maxmenu");
+    ids = Array.from(new Set([...dailySettings().chatIds.split(",").map((x) => x.trim()).filter(Boolean), ...mastersForMorning()]));
+  }
   let sent = 0;
   const errors: string[] = [];
   for (const [i, id] of ids.entries()) {

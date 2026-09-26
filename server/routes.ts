@@ -708,10 +708,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (!e) continue;
         const target = objectId || e.objectId || 0;
         if (objectId && e.objectId !== objectId) storage.updateEmployee(id, { objectId });
-        storage.createShift({
+        const createdShift = storage.createShift({
           employeeId: id, objectId: target, startDate, endDate, cycleType,
           replacementAssigned: 0, importId: 0,
         });
+        void import("./maxmenu").then((m) => m.notifyShiftCreated(createdShift));
 
         // Человек уезжает на вахту, поэтому открытые отпуск, больничный, обучение
         // или межвахта закрываются днём до заезда: иначе ручной статус
@@ -846,7 +847,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/shifts", (req, res) => {
     try {
       const v = insertShiftSchema.parse(req.body);
-      res.json(storage.createShift({ ...v, importId: 0 }));
+      const created = storage.createShift({ ...v, importId: 0 });
+      void import("./maxmenu").then((m) => m.notifyShiftCreated(created));
+      res.json(created);
     } catch (e) { fail(res, e); }
   });
   app.patch("/api/shifts/:id", (req, res) => {
@@ -875,6 +878,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (req.body?.replacementAssigned !== undefined) patch.replacementAssigned = Number(req.body.replacementAssigned) ? 1 : 0;
       if (!Object.keys(patch).length) throw new Error("Нечего менять");
       const updated = storage.updateShift(Number(req.params.id), patch);
+      // сотруднику — сообщение в MAX, если вахту перенесли или перевели
+      void import("./maxmenu").then((m) => m.notifyShiftChange(current, { ...current, ...patch }));
       if (patch.startDate || patch.endDate)
         audit(req, "Изменение дат вахты", "shifts", `#${req.params.id}: ${start} — ${end}`);
       res.json(updated);
@@ -895,7 +900,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(allEmployeesTimesheet(year));
     } catch (e) { fail(res, e); }
   });
-  app.delete("/api/shifts/:id", (req, res) => { storage.deleteShift(Number(req.params.id)); res.json({ ok: true }); });
+  app.delete("/api/shifts/:id", (req, res) => {
+    const before = storage.shifts().find((s: any) => s.id === Number(req.params.id));
+    storage.deleteShift(Number(req.params.id));
+    // сотруднику — сообщение в MAX, что вахта отменена
+    if (before) void import("./maxmenu").then((m) => m.notifyShiftChange(before, null));
+    res.json({ ok: true });
+  });
 
   // ---------- Уведомления через бота MAX ----------
   app.get("/api/max/settings", (req, res) => {
@@ -916,11 +927,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (b.notifyMessage !== undefined) patch.notifyMessage = !!b.notifyMessage;
       if (b.notifyConfirm !== undefined) patch.notifyConfirm = !!b.notifyConfirm;
       if (b.duplicateSms !== undefined) patch.duplicateSms = !!b.duplicateSms;
+      if (b.notifyShiftChanges !== undefined) patch.notifyShiftChanges = !!b.notifyShiftChanges;
       // кому открыта переписка — решает только директор
       const cur = maxSettings();
       const norm = (v: any) => String(v ?? "").split(",").map((x) => x.trim()).filter(Boolean).join(",");
-      const changesChat = (b.messageChatIds !== undefined && norm(b.messageChatIds) !== norm(cur.messageChatIds))
-        || (b.chatUserIds !== undefined && norm(b.chatUserIds) !== norm(cur.chatUserIds));
+      const changesChat = (["messageChatIds", "chatUserIds", "directorChatIds", "masterChatIds", "masterOffAllowed"] as const)
+        .some((k) => b[k] !== undefined && norm(b[k]) !== norm((cur as any)[k]));
       if (changesChat) {
         if (req.authUser?.role !== "director") return res.status(403).json({ error: "Открывать переписку может только директор" });
         if (b.messageChatIds !== undefined) {
@@ -928,7 +940,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           if (ids.length > 4) return res.status(400).json({ error: "Переписку можно открыть не больше чем 4 ответственным" });
           patch.messageChatIds = ids.join(",");
         }
-        if (b.chatUserIds !== undefined) patch.chatUserIds = String(b.chatUserIds).split(",").map((x) => x.trim()).filter(Boolean).join(",");
+        if (b.chatUserIds !== undefined) patch.chatUserIds = norm(b.chatUserIds);
+        for (const k of ["directorChatIds", "masterChatIds", "masterOffAllowed"]) if (b[k] !== undefined) patch[k] = norm(b[k]);
       }
       if (b.reportHour !== undefined) {
         patch.reportHour = Math.min(23, Math.max(0, Number(b.reportHour) || 0));

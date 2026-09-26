@@ -3080,6 +3080,57 @@ export default function Crew() {
                       />
                       Сообщать о каждом новом сообщении от сотрудника
                     </label>
+                    <div className="rounded-md border border-sky-300 bg-sky-50 p-3 dark:border-sky-800 dark:bg-sky-950" data-testid="box-max-roles">
+                      <div className="text-sm font-semibold">Кнопки в MAX по ролям</div>
+                      <div className="mb-2 text-xs text-muted-foreground">
+                        Директор — все команды. Ответственные — «Кто где», «Сводка», «Заезды», «События».
+                        Буровые мастера — «Сводка» всех участков (пока на вахте), «Смена вахт» своего участка, «Мой заезд», «Написать сообщение».
+                        Сотрудники — «Мой заезд» и «Написать сообщение». Меню открывается командой «меню». Менять может только директор.
+                      </div>
+                      {([
+                        ["directorChatIds", "Директор (все команды)", 0],
+                        ["masterChatIds", "Буровые мастера", 0],
+                        ["masterOffAllowed", "Мастерам разрешена сводка и на межвахте", 1],
+                      ] as [string, string, number][]).map(([key, title, onlyMasters]) => {
+                        const ids = String(maxF[key] ?? "").split(",").map((x: string) => x.trim()).filter(Boolean);
+                        const masters = String(maxF.masterChatIds ?? "").split(",").map((x: string) => x.trim()).filter(Boolean);
+                        const linked = (maxInvites.data?.rows ?? []).filter((r: any) => r.linked && (!onlyMasters || masters.includes(String(r.chatId))));
+                        return (
+                          <div key={key} className="mb-2">
+                            <div className="mb-1 text-xs font-medium">{title}: выбрано {ids.length}</div>
+                            <div className="flex flex-wrap gap-2" data-testid={`list-${key}`}>
+                              {linked.length === 0 ? (
+                                <span className="text-xs text-muted-foreground">{onlyMasters ? "Сначала отметьте буровых мастеров" : "Нет привязанных профилей"}</span>
+                              ) : linked.map((r: any) => {
+                                const on = ids.includes(String(r.chatId));
+                                return (
+                                  <label key={r.employeeId} className={cn("flex items-center gap-2 rounded-md border bg-background px-2 py-1 text-sm",
+                                    on && "border-emerald-500 bg-emerald-50 dark:bg-emerald-950", !isDir && "opacity-60")}>
+                                    <Checkbox
+                                      checked={on}
+                                      disabled={!isDir}
+                                      onCheckedChange={(v: boolean) => {
+                                        const next = v ? [...ids, String(r.chatId)] : ids.filter((x: string) => x !== String(r.chatId));
+                                        setMaxForm({ ...maxF, [key]: next.join(",") });
+                                      }}
+                                    />
+                                    {r.fio}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <label className="mt-1 flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={maxF.notifyShiftChanges !== false}
+                          onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, notifyShiftChanges: v })}
+                          data-testid="check-notify-shift-changes"
+                        />
+                        Сообщать сотруднику о назначении, переносе и отмене его вахты
+                      </label>
+                    </div>
                     <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950" data-testid="box-chat-access">
                       <div className="text-sm font-semibold">Кто видит личную переписку с сотрудниками</div>
                       <div className="mb-2 text-xs text-muted-foreground">
