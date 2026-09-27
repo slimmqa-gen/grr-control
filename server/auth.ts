@@ -278,6 +278,13 @@ const RULES: Rule[] = [
   { prefix: "/api/inventory", section: "fuel", readGuard: true },
   { prefix: "/api/employees", section: "crew", readGuard: true },
   { prefix: "/api/shifts", section: "crew", readGuard: true },
+  // бот MAX, СМС, табели и события сотрудников — только тем, у кого есть раздел
+  // «Сотрудники и вахты». Webhook MAX открыт отдельно (PUBLIC) и защищён секретом.
+  { prefix: "/api/max", section: "crew", readGuard: true },
+  { prefix: "/api/sms", section: "crew", readGuard: true },
+  { prefix: "/api/hr", section: "crew", readGuard: true },
+  { prefix: "/api/employee-events", section: "crew", readGuard: true },
+  { prefix: "/api/work-calendar", section: "crew", readGuard: false },
   { prefix: "/api/pbk", section: "pbk", readGuard: true },
   { prefix: "/api/ref", section: "references", readGuard: false },
   { prefix: "/api/settings", section: "settings", readGuard: false },
@@ -354,8 +361,16 @@ export function installAuth(app: Express) {
   app.post("/api/auth/login", (req, res) => {
     const login = String(req.body?.login ?? "").trim();
     const password = String(req.body?.password ?? "");
+    // защита от подбора пароля: после 5 ошибок подряд — пауза 15 минут
+    // последний адрес в цепочке добавил наш nginx — его подделать нельзя
+    const ip = (String(req.headers["x-forwarded-for"] ?? "").split(",").pop() || req.socket.remoteAddress || "").trim();
+    const wait = loginBlockedFor(login, ip);
+    if (wait > 0) {
+      return res.status(429).json({ error: `Слишком много неверных попыток. Попробуйте через ${Math.ceil(wait / 60000)} мин.` });
+    }
     const u = storage.userByLogin(login);
     if (!u || !bcrypt.compareSync(password, u.passwordHash)) {
+      loginFailed(login, ip);
       storage.addAudit({
         at: nowIso(), userId: 0, login: login || "—", role: "", action: "Неудачный вход",
         entity: "Вход", details: "Неверный логин или пароль", ok: 0,
@@ -363,6 +378,7 @@ export function installAuth(app: Express) {
       return res.status(401).json({ error: "Неверный логин или пароль" });
     }
     if (!u.active) return res.status(403).json({ error: "Учётная запись отключена. Обратитесь к директору." });
+    loginOk(login, ip);
     const token = crypto.randomUUID();
     storage.createSession(token, u.id, expiryIso());
     storage.updateUser(u.id, { lastLogin: nowIso() });
@@ -444,6 +460,37 @@ export function currentUser(req: Request): AuthUser | null {
   const au = toAuthUser(u);
   req.authUser = au;
   return au;
+}
+
+/* ---------- защита от подбора пароля ---------- */
+const FAILS = new Map<string, { n: number; until: number; last: number }>();
+const MAX_FAILS = 5;
+const BLOCK_MS = 15 * 60_000;
+const keysOf = (login: string, ip: string) => [`l:${login.toLowerCase()}`, `ip:${ip}`];
+function loginBlockedFor(login: string, ip: string): number {
+  const now = Date.now();
+  let wait = 0;
+  for (const k of keysOf(login, ip)) {
+    const f = FAILS.get(k);
+    if (f && f.until > now) wait = Math.max(wait, f.until - now);
+  }
+  return wait;
+}
+function loginFailed(login: string, ip: string) {
+  const now = Date.now();
+  for (const k of keysOf(login, ip)) {
+    const f = FAILS.get(k) ?? { n: 0, until: 0, last: 0 };
+    if (now - f.last > BLOCK_MS) f.n = 0;       // давние ошибки не копим
+    f.n++; f.last = now;
+    // по адресу — порог выше: из одной сети могут входить несколько человек
+    const limit = k.startsWith("ip:") ? MAX_FAILS * 4 : MAX_FAILS;
+    if (f.n >= limit) { f.until = now + BLOCK_MS; f.n = 0; }
+    FAILS.set(k, f);
+  }
+  if (FAILS.size > 5000) for (const [k, f] of FAILS) if (f.until < now && now - f.last > BLOCK_MS) FAILS.delete(k);
+}
+function loginOk(login: string, _ip: string) {
+  FAILS.delete(`l:${login.toLowerCase()}`);
 }
 
 /** Главный сторож: проверка входа, раздела, права записи и объектов */

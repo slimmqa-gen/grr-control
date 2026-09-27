@@ -186,6 +186,12 @@ done
 say ""
 if [ "$OK" = 1 ]; then
   rm -rf dist.prev
+  # ежедневная резервная копия базы и сводок в 03:30 (ставится один раз)
+  if [ ! -f /etc/cron.d/pbk-backup ]; then
+    echo "30 3 * * * root bash ${APP_DIR}/deploy/backup.sh >> /var/log/pbk-backup.log 2>&1" > /etc/cron.d/pbk-backup
+    chmod 644 /etc/cron.d/pbk-backup
+    say " Включена ежедневная резервная копия в 03:30 (/var/pbk-backups)."
+  fi
   say "=============================================="
   say " ГОТОВО. Версия ${NEW_COMMIT} работает и отвечает на порту ${PORT}."
   say " База данных и загруженные файлы не тронуты."

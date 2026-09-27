@@ -967,6 +967,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e) { fail(res, e); }
   });
 
+  /** Разослать всем привязанным меню с кнопками */
+  app.post("/api/max/menu-broadcast", async (req, res) => {
+    try {
+      if (req.authUser?.role !== "director") return res.status(403).json({ error: "Рассылку меню делает директор" });
+      const { broadcastMenu } = await import("./maxmenu");
+      const out = await broadcastMenu();
+      audit(req, "Рассылка меню MAX", "max", `получателей ${out.total}`);
+      res.json(out);
+    } catch (e) { fail(res, e); }
+  });
+
   /** Проверить, кто открыл бота: привязки появляются сразу */
   app.post("/api/max/poll", async (req, res) => {
     try {

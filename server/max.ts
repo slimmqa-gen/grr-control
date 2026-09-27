@@ -863,7 +863,14 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     return { linked, replies };
   }
 
-  // 8. личное сообщение сотрудника — попадёт в переписку
+  // 8. непривязанный профиль: посторонний человек мог найти бота —
+  // его сообщения не пересылаем, просим открыть персональную ссылку
+  if (text && type !== "bot_started" && !link) {
+    await sendMax(chatId, "Ваш профиль MAX не привязан к карточке сотрудника. Откройте персональную ссылку, которую прислал отдел кадров.");
+    return { linked, replies };
+  }
+
+  // 9. личное сообщение сотрудника — попадёт в переписку
   if (text && type !== "bot_started") {
     const inbox: any = storage.createMaxInbox({
       employeeId, shiftId: 0, chatId, userName, text,

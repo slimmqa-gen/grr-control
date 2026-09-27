@@ -241,6 +241,20 @@ export async function handleMenu(chatId: string, cmd: string): Promise<void> {
   }
 }
 
+/** Разослать всем привязанным их меню — например, после обновления бота */
+export async function broadcastMenu(): Promise<{ total: number }> {
+  const chats = Array.from(new Set((storage.notifyLinks() as any[])
+    .filter((l) => l.channel === "max" && l.chatId).map((l) => String(l.chatId))));
+  void (async () => {
+    for (const [i, id] of chats.entries()) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 700));
+      try { await sendMainMenu(id, "🔔 <b>Бот обновлён</b>\nТеперь всё — кнопками ниже. Меню можно вызвать в любой момент словом «меню»."); }
+      catch { /* следующему */ }
+    }
+  })();
+  return { total: chats.length };
+}
+
 /* ------------------- уведомление об изменении вахты ------------------- */
 
 /** Сотруднику — сообщение, что ему назначили вахту */

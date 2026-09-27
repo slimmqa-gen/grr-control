@@ -698,6 +698,11 @@ export default function Crew() {
   const { user: me } = useAuth();
   const isDir = me?.role === "director";
   const appUsers = useQuery<any>({ queryKey: ["/api/users"], enabled: isDir });
+  const broadcastMenu = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/max/menu-broadcast", {})).json(),
+    onSuccess: (d: any) => toast({ title: `Меню отправляется: ${d.total} чел.`, description: "Сообщения уходят по очереди, это займёт до минуты." }),
+    onError: (e: any) => toast({ title: "Не отправлено", description: String(e?.message ?? e), variant: "destructive" }),
+  });
   const [maxToken, setMaxToken] = useState("");
   const [maxBot, setMaxBot] = useState("");
   const maxF = maxForm ?? (maxSettings.data ? { ...maxSettings.data } : null);
@@ -3130,6 +3135,16 @@ export default function Crew() {
                         />
                         Сообщать сотруднику о назначении, переносе и отмене его вахты
                       </label>
+                      {isDir && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <Button size="sm" variant="outline" disabled={broadcastMenu.isPending}
+                            onClick={() => { if (confirm("Отправить всем привязанным сотрудникам сообщение «Бот обновлён» с их кнопками?")) broadcastMenu.mutate(); }}
+                            data-testid="button-menu-broadcast">
+                            <Send className="mr-2 h-4 w-4" />Разослать меню всем
+                          </Button>
+                          <span className="text-xs text-muted-foreground">Каждый получит свои кнопки. Сначала сохраните роли.</span>
+                        </div>
+                      )}
                     </div>
                     <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950" data-testid="box-chat-access">
                       <div className="text-sm font-semibold">Кто видит личную переписку с сотрудниками</div>

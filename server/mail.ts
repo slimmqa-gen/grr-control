@@ -175,6 +175,8 @@ export async function testMail() {
   const { ImapFlow } = await import("imapflow");
   const client = new ImapFlow({
     host: s.host, port: s.port, secure: s.port !== 143 && s.port !== 1143, auth: { user: s.user, pass: s.password }, logger: false,
+    // почтовый сервер может «повиснуть» — не ждём бесконечно
+    connectionTimeout: 30_000, greetingTimeout: 20_000, socketTimeout: 120_000,
   });
   try {
     await client.connect();
@@ -236,6 +238,8 @@ async function checkMailInner(again: boolean): Promise<MailCheckResult> {
   const { simpleParser } = await import("mailparser");
   const client = new ImapFlow({
     host: s.host, port: s.port, secure: s.port !== 143 && s.port !== 1143, auth: { user: s.user, pass: s.password }, logger: false,
+    // почтовый сервер может «повиснуть» — не ждём бесконечно
+    connectionTimeout: 30_000, greetingTimeout: 20_000, socketTimeout: 120_000,
   });
 
   const logRow = pdb.prepare(`INSERT INTO mail_log

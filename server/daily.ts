@@ -555,7 +555,19 @@ export async function sendDailyNow(date = defaultReportDate(), chatIds?: string[
  * В окне рассылки — отправить сводку за сутки. После утренней отправки —
  * сообщить об изменениях, если они появились.
  */
-export async function hourlyTick(force = false, mailNow = false, mailAgain = false) {
+/** Одна проверка за раз: ручная кнопка и планировщик не должны идти параллельно */
+let tickRunning: Promise<any> | null = null;
+export async function hourlyTick(force = false, mailNow = false, mailAgain = false): Promise<any> {
+  if (tickRunning) {
+    if (!force) return { skipped: true, busy: true };
+    try { await tickRunning; } catch { /* предыдущая упала — идём дальше */ }
+  }
+  const p = hourlyTickInner(force, mailNow, mailAgain);
+  tickRunning = p;
+  try { return await p; } finally { if (tickRunning === p) tickRunning = null; }
+}
+
+async function hourlyTickInner(force: boolean, mailNow: boolean, mailAgain: boolean) {
   const st = dailySettings();
   const now = localNow(st.tz);
   const hourKey = `${now.date} ${now.hour}`;
@@ -581,7 +593,8 @@ export async function hourlyTick(force = false, mailNow = false, mailAgain = fal
     // Окно рассылки — с sendFrom. Если окно пропущено (рассылку включили днём,
     // сервер перезапускался утром), сводка уходит при первой проверке после
     // него, а не ждёт следующего утра.
-    const dueToday = now.hour >= st.sendFrom;
+    // досылаем пропущенную утреннюю сводку только до 21:00 — ночью людей не будим
+    const dueToday = now.hour >= st.sendFrom && now.hour < 21;
     if (dueToday && st.lastSentDate !== now.date) {
       const out = await sendToRecipients(summaryHtml(s), undefined, "html");
       if (out.sent) {
