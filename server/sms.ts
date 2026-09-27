@@ -419,21 +419,69 @@ export function eventsWaitingText(): string {
  * Сообщения сотрудникам программа сама не отправляет: решение и отправка
  * остаются за человеком — кнопками на вкладке «Вызов на вахту».
  */
+/** Кому напоминать о вызовах: ответственные и директор */
+function leaderChats(): string[] {
+  const m = maxSettings();
+  return Array.from(new Set(`${m.reportChatIds ?? ""},${m.directorChatIds ?? ""}`
+    .split(",").map((x) => x.trim()).filter(Boolean)));
+}
+
+/**
+ * Напоминание ответственным: кому пора отправить вызов на вахту.
+ * Сотрудникам само ничего не уходит — вызов отправляют кнопкой.
+ */
+export async function sendCalloutReminder(chatIds?: string[]) {
+  const rows = pendingCallouts().filter((r) => !r.sentAt);
+  if (!rows.length) return { rows: 0, sent: 0 };
+  const lines = [`📨 <b>Нужно отправить вызов на вахту — ${rows.length} чел.</b>`, ""];
+  for (const r of rows) {
+    const how = r.maxLinked ? "MAX" : r.phoneOk ? "СМС" : "⚠️ нет ни бота, ни номера";
+    lines.push(`• <b>${r.fio}</b> — заезд ${ruDate(r.startDate)} (через ${r.daysLeft} дн.), ${r.object} · ${how}`);
+  }
+  lines.push("", "<i>Сотрудникам само ничего не уходит. Нажмите кнопку, чтобы отправить вызов.</i>");
+  const sendable = rows.filter((r) => r.maxLinked || r.phoneOk);
+  const buttons: { text: string; payload: string }[][] = [];
+  if (sendable.length > 1) buttons.push([{ text: `📨 Отправить всем (${sendable.length})`, payload: "co:all" }]);
+  for (const r of sendable.slice(0, 10)) {
+    const fam = String(r.fio).split(/\s+/)[0];
+    buttons.push([{ text: `📨 ${fam} — ${ruDate(r.startDate).slice(0, 5)}`, payload: `co:${r.shiftId}` }]);
+  }
+  const { sendMaxMenu } = await import("./max");
+  let sent = 0;
+  for (const [i, id] of (chatIds ?? leaderChats()).entries()) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 600));
+    try { await sendMaxMenu(id, lines.join("\n"), buttons, "html"); sent++; } catch { /* следующему */ }
+  }
+  return { rows: rows.length, sent };
+}
+
+/** Местное время: сервер может жить по UTC */
+function localHour() {
+  return Number(new Date().toLocaleString("en-GB", { timeZone: "Asia/Krasnoyarsk", hour: "2-digit", hour12: false }));
+}
+function localDate() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Krasnoyarsk" });
+}
+
 export function startSmsScheduler() {
   const tick = async () => {
     try {
       const s = smsSettings();
-      if (!s.enabled) return;
-      const now = new Date();
-      const today = iso(now);
+      const m = maxSettings();
+      // напоминание работает, если включены СМС или бот MAX
+      if (!s.enabled && !(m.enabled && m.token)) return;
+      const today = localDate();
       if (s.lastRun === today) return;
-      if (now.getHours() < s.sendHour) return;
-      const { rows, text } = calloutReminder();
+      if (localHour() < s.sendHour) return;
       saveSmsSettings({ lastRun: today });
-      if (!text) return;
-      const { notifyResponsible } = await import("./max");
-      await notifyResponsible(text, "decline");
-      console.log(`[Напоминание] Нужно вызвать: ${rows.length} чел., напоминание отправлено.`);
+      const out = await sendCalloutReminder();
+      // открытые события и опросы — отдельным сообщением, как раньше
+      const ev = eventsWaitingText();
+      if (ev) {
+        const { notifyResponsible } = await import("./max");
+        await notifyResponsible(ev, "decline");
+      }
+      if (out.rows) console.log(`[Напоминание] Нужно вызвать: ${out.rows} чел., напоминание отправлено ${out.sent} ответственным.`);
     } catch (e) {
       console.log(`[Напоминание] Ошибка: ${String((e as any)?.message ?? e)}`);
     }

@@ -50,6 +50,11 @@ export type DailySettings = {
   lastSentDate: string;
   lastSentHash: string;
   lastHourKey: string;
+  /**
+   * Какие участки видит получатель: chatId → список названий участков
+   * (и «ЦПП» для пробоподготовки). Нет записи — видит все.
+   */
+  chatObjects: Record<string, string[]>;
 };
 
 const DEFAULT_DAILY: DailySettings = {
@@ -62,7 +67,49 @@ const DEFAULT_DAILY: DailySettings = {
   lastSentDate: "",
   lastSentHash: "",
   lastHourKey: "",
+  chatObjects: {},
 };
+
+export const PREP_KEY = "ЦПП";
+
+/** Сводка только по участкам, которые открыты получателю */
+export function summaryFor(s: DailySummary, chatId: string): DailySummary {
+  const allow = dailySettings().chatObjects?.[chatId];
+  if (!allow || !allow.length) return s;
+  const objects = s.objects.filter((o) => allow.includes(o.object));
+  const t = (k: keyof ObjectRow) => r1(objects.reduce((a, o) => a + (Number(o[k]) || 0), 0));
+  return {
+    ...s,
+    objects,
+    totals: { day: t("day"), month: t("month"), year: t("year"), planMonth: t("planMonth"), planToDate: t("planToDate"), lag: t("lag"), remaining: t("remaining") },
+    missing: s.missing.filter((m) => allow.includes(m)),
+    ...(allow.includes(PREP_KEY) ? {} : { hidePrep: true }),
+  } as DailySummary;
+}
+
+/** Все получатели утренней сводки: отмеченные + мастера на вахте */
+export async function dailyRecipients(): Promise<string[]> {
+  const { mastersForMorning } = await import("./maxmenu");
+  return Array.from(new Set([...dailySettings().chatIds.split(",").map((x) => x.trim()).filter(Boolean), ...mastersForMorning()]));
+}
+
+/** Каждому получателю — своя сводка (или свои изменения) */
+export async function sendSummaryPersonal(
+  make: (chatId: string) => string, chatIds?: string[],
+) {
+  const ids = chatIds ?? await dailyRecipients();
+  let sent = 0;
+  const errors: string[] = [];
+  for (const [i, id] of ids.entries()) {
+    const text = make(id);
+    if (!text) continue;
+    if (i > 0) await new Promise((r) => setTimeout(r, 600));
+    const out = await sendToRecipients(text, [id], "html");
+    sent += out.sent;
+    errors.push(...out.errors);
+  }
+  return { sent, errors, recipients: ids.length };
+}
 
 export function dailySettings(): DailySettings {
   try {
@@ -346,6 +393,11 @@ export function summaryHtml(s: DailySummary): string {
   if (s.totals.planMonth) {
     out.push(`План месяца ${fmt(s.totals.planMonth)} м · ${s.totals.lag > 0 ? `отставание <b>${fmt(s.totals.lag)} м</b>` : `опережение ${fmt(-s.totals.lag)} м`}`);
   }
+  if ((s as any).hidePrep) {
+    if (s.missing.length) out.push("", `⚠️ <b>Нет сводки за сутки:</b> ${s.missing.map(esc).join(", ")}`);
+    out.push("", "<i>🟢 по графику · 🟡 небольшое отставание · 🔴 сильное · 🟠 нет данных за сутки</i>");
+    return out.join("\n");
+  }
   out.push("", SEP);
   out.push(`${s.prep.reported ? "🟢" : "🟠"} <b>ПРОБОПОДГОТОВКА (ЦПП)</b>`);
   if (!s.prep.reported) out.push(s.prep.lastDate ? `⚠️ <i>за сутки не заполнена, последние данные ${ru(s.prep.lastDate)}</i>` : "⚠️ <i>сводки нет</i>");
@@ -545,7 +597,7 @@ export async function sendToRecipients(text: string, chatIds?: string[], format?
 export async function sendDailyNow(date = defaultReportDate(), chatIds?: string[]) {
   const s = dailySummary(date);
   const { row } = saveSnapshot(s, "отправка вручную");
-  const out = await sendToRecipients(summaryHtml(s), chatIds, "html");
+  const out = await sendSummaryPersonal((id) => summaryHtml(summaryFor(s, id)), chatIds);
   if (out.sent) markSnapshotSent(row.id);
   return { ...out, snapshotId: row.id };
 }
@@ -596,7 +648,7 @@ async function hourlyTickInner(force: boolean, mailNow: boolean, mailAgain: bool
     // досылаем пропущенную утреннюю сводку только до 21:00 — ночью людей не будим
     const dueToday = now.hour >= st.sendFrom && now.hour < 21;
     if (dueToday && st.lastSentDate !== now.date) {
-      const out = await sendToRecipients(summaryHtml(s), undefined, "html");
+      const out = await sendSummaryPersonal((id) => summaryHtml(summaryFor(s, id)));
       if (out.sent) {
         markSnapshotSent(row.id);
         saveDailySettings({ lastSentDate: now.date, lastSentHash: row.hash });
@@ -606,7 +658,8 @@ async function hourlyTickInner(force: boolean, mailNow: boolean, mailAgain: bool
       const prevData: DailySummary | null = prev ? JSON.parse(prev.data) : null;
       const text = prevData ? changesHtml(prevData, s) : "";
       if (text) {
-        const out = await sendToRecipients(text, undefined, "html");
+        // изменения — тоже только по своим участкам
+        const out = await sendSummaryPersonal((id) => changesHtml(summaryFor(prevData!, id), summaryFor(s, id)));
         if (out.sent) {
           markSnapshotSent(row.id);
           saveDailySettings({ lastSentHash: row.hash });

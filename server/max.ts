@@ -46,7 +46,7 @@ export function publicMaxSettings() {
   return { ...rest, hasToken: !!token, hasWebhookSecret: !!webhookSecret };
 }
 
-async function maxRequest(path: string, init?: RequestInit) {
+export async function maxRequest(path: string, init?: RequestInit) {
   const s = maxSettings();
   if (!s.token) throw new Error("Не задан токен бота MAX");
   let res: Response;
@@ -470,6 +470,35 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     const [action, shiftRaw] = callbackPayload.split(":");
     const shiftId = Number(shiftRaw) || 0;
 
+    // ответственный отправляет вызов на вахту кнопкой из напоминания
+    if (action === "co") {
+      const answer = async (t: string) => {
+        if (!callbackId) return;
+        try {
+          await maxRequest(`/answers?callback_id=${encodeURIComponent(callbackId)}`, {
+            method: "POST", body: JSON.stringify({ notification: t }),
+          });
+        } catch { /* не критично */ }
+      };
+      if (!isResponsible(chatId)) { await answer("Недоступно"); return { linked, replies }; }
+      await answer("Отправляю…");
+      try {
+        const { runCallouts } = await import("./sms");
+        const out = await runCallouts(shiftRaw === "all" ? undefined : [Number(shiftRaw) || -1]);
+        const who = out.results.map((r) => `${r.ok ? "✅" : "❌"} ${r.fio}${r.ok ? ` (${r.phone === "MAX" ? "MAX" : "СМС"})` : ` — ${r.response}`}`);
+        await sendMax(chatId, who.length
+          ? `📨 <b>Вызовы отправлены: ${out.sent}</b>${out.failed ? `, не ушло: ${out.failed}` : ""}\n${who.join("\n")}`
+          : "Этим сотрудникам вызов уже отправлен.", 0, false, "html");
+        storage.addAudit({
+          at: new Date().toISOString(), userId: 0, login: `MAX ${chatId}`, role: "", action: "Вызов на вахту из MAX",
+          entity: "max", details: `отправлено ${out.sent}`, ok: 1,
+        });
+      } catch (e) {
+        await sendMax(chatId, `Вызов не отправлен: ${String((e as Error)?.message ?? e)}`);
+      }
+      return { linked, replies };
+    }
+
     // плашки главного меню
     if (action === "m") {
       if (callbackId) {
@@ -801,7 +830,9 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
     const ok = await maySeeSummary(chatId) && !(people && isMasterChat(chatId) && !isResponsible(chatId));
     if (chatId && ok) {
       try {
-        const text = people ? workersHtml(dailySummary()) : summaryHtml(dailySummary());
+        const { summaryFor } = await import("./daily");
+        const own = summaryFor(dailySummary(), chatId);
+        const text = people ? workersHtml(own) : summaryHtml(own);
         const { sendToRecipients } = await import("./daily");
         await sendToRecipients(text, [chatId], "html");
       } catch (e) {

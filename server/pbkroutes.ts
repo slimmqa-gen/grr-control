@@ -13,7 +13,7 @@ import {
   dailySummary, summaryText, defaultReportDate, dailySettings, saveDailySettings, saveSnapshot,
   snapshotList, snapshotById, summaryWorkbook, sendDailyNow, hourlyTick, localNow, deleteSnapshot,
 } from "./daily";
-import { publicMailSettings, saveMailSettings, testMail, mailLog, senderList, lastFilledDate, mailErrorText } from "./mail";
+import { publicMailSettings, saveMailSettings, testMail, mailLog, senderList, lastFilledDate, mailErrorText, requestFiles, requestPath } from "./mail";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const fail = (res: Response, e: any, code = 400) =>
@@ -255,6 +255,13 @@ export function registerPbkRoutes(app: Express) {
       for (const k of ["enabled", "notifyChanges"]) if (b[k] !== undefined) patch[k] = !!b[k];
       for (const k of ["sendFrom", "sendTo"]) if (b[k] !== undefined) patch[k] = Number(b[k]);
       if (b.chatIds !== undefined) patch.chatIds = String(b.chatIds);
+      if (b.chatObjects !== undefined && typeof b.chatObjects === "object") {
+        const clean: Record<string, string[]> = {};
+        for (const [k, v] of Object.entries(b.chatObjects)) {
+          if (Array.isArray(v) && v.length) clean[String(k)] = v.map(String);
+        }
+        patch.chatObjects = clean;
+      }
       if (b.tz !== undefined) patch.tz = String(b.tz) || "Asia/Krasnoyarsk";
       res.json(saveDailySettings(patch));
     } catch (e) { fail(res, e); }
@@ -359,6 +366,19 @@ export function registerPbkRoutes(app: Express) {
       const out: any = await hourlyTick(true, true, !!req.body?.again);
       if (out.mail?.error) return res.status(400).json({ error: out.mail.error });
       res.json({ ...(out.mail ?? {}), snapshot: out.snapshot, isNew: out.isNew });
+    } catch (e) { fail(res, e); }
+  });
+
+  app.get("/api/pbk/requests", (_req, res) => {
+    try { res.json({ rows: requestFiles() }); } catch (e) { fail(res, e); }
+  });
+  app.get("/api/pbk/requests/file", (req, res) => {
+    try {
+      const p = requestPath(String(req.query.f ?? ""));
+      if (!p) return res.status(404).json({ error: "Файл не найден" });
+      const name = path.basename(p).replace(/^\d+_/, "");
+      res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+      res.sendFile(p);
     } catch (e) { fail(res, e); }
   });
 

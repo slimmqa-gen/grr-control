@@ -103,6 +103,28 @@ export function mailDue(): boolean {
   return Date.now() - new Date(s.lastCheck).getTime() >= every - 30_000;
 }
 
+/** Заявки на материалы, пришедшие с почты */
+export function requestFiles() {
+  const root = path.join(DATA_DIR, "requests");
+  if (!fs.existsSync(root)) return [];
+  const rows: { day: string; file: string; name: string; from: string; subject: string; size: number }[] = [];
+  const log = pdb.prepare(`SELECT from_addr, subject, file, uid FROM mail_log WHERE status='заявка'`).all() as any[];
+  for (const day of fs.readdirSync(root).sort().reverse()) {
+    for (const f of fs.readdirSync(path.join(root, day))) {
+      const uid = Number(f.split("_")[0]);
+      const name = f.slice(f.indexOf("_") + 1);
+      const l = log.find((x) => x.uid === uid && x.file === name);
+      rows.push({ day, file: `${day}/${f}`, name, from: l?.from_addr ?? "", subject: l?.subject ?? "", size: fs.statSync(path.join(root, day, f)).size });
+    }
+  }
+  return rows;
+}
+export function requestPath(rel: string): string | null {
+  const root = path.join(DATA_DIR, "requests");
+  const p = path.resolve(root, rel);
+  return p.startsWith(root + path.sep) && fs.existsSync(p) ? p : null;
+}
+
 export function publicMailSettings() {
   const { password, ...rest } = mailSettings();
   let others: any[] = [];
@@ -343,6 +365,14 @@ async function checkMailInner(again: boolean): Promise<MailCheckResult> {
               : "не похоже на сводку бурения или ЦПП";
           } catch (e) {
             note = `ошибка разбора: ${String((e as Error)?.message ?? e)}`;
+          }
+          // заявки на материалы складываем отдельно: разбор по позициям — позже, по образцу
+          if (!parsedOk && /заявк/i.test(name)) {
+            const dir = path.join(DATA_DIR, "requests", day);
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, `${w.uid}_${name}`), buf);
+            logRow.run(at, w.uid, w.messageId, w.from, w.subject, w.date, name, sha, "заявка", "сохранена в «Заявки на материалы»");
+            continue;
           }
           if (!parsedOk) {
             res.rejected++;

@@ -708,11 +708,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (!e) continue;
         const target = objectId || e.objectId || 0;
         if (objectId && e.objectId !== objectId) storage.updateEmployee(id, { objectId });
-        const createdShift = storage.createShift({
+        storage.createShift({
           employeeId: id, objectId: target, startDate, endDate, cycleType,
           replacementAssigned: 0, importId: 0,
         });
-        void import("./maxmenu").then((m) => m.notifyShiftCreated(createdShift));
 
         // Человек уезжает на вахту, поэтому открытые отпуск, больничный, обучение
         // или межвахта закрываются днём до заезда: иначе ручной статус
@@ -847,9 +846,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/shifts", (req, res) => {
     try {
       const v = insertShiftSchema.parse(req.body);
-      const created = storage.createShift({ ...v, importId: 0 });
-      void import("./maxmenu").then((m) => m.notifyShiftCreated(created));
-      res.json(created);
+      // сотруднику ничего не уходит само: вызов на вахту отправляет ответственный кнопкой
+      res.json(storage.createShift({ ...v, importId: 0 }));
     } catch (e) { fail(res, e); }
   });
   app.patch("/api/shifts/:id", (req, res) => {
@@ -928,6 +926,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (b.notifyConfirm !== undefined) patch.notifyConfirm = !!b.notifyConfirm;
       if (b.duplicateSms !== undefined) patch.duplicateSms = !!b.duplicateSms;
       if (b.notifyShiftChanges !== undefined) patch.notifyShiftChanges = !!b.notifyShiftChanges;
+      if (b.directorReport !== undefined) patch.directorReport = !!b.directorReport;
+      if (b.remindBefore !== undefined) patch.remindBefore = !!b.remindBefore;
       // кому открыта переписка — решает только директор
       const cur = maxSettings();
       const norm = (v: any) => String(v ?? "").split(",").map((x) => x.trim()).filter(Boolean).join(",");
@@ -964,6 +964,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const rows = emps.map((e: any) => ({ fio: e.fio, position: e.position, ...inviteFor(e.id) }))
         .sort((a: any, b: any) => String(a.fio).localeCompare(String(b.fio), "ru"));
       res.json({ rows, settings: publicMaxSettings() });
+    } catch (e) { fail(res, e); }
+  });
+
+  /** Состояние бота и резервных копий; ручная проверка и пробный отчёт директору */
+  app.get("/api/max/health", async (_req, res) => {
+    try {
+      const { botHealth, backupState } = await import("./automation");
+      res.json({ bot: botHealth(), backup: backupState() });
+    } catch (e) { fail(res, e); }
+  });
+  app.post("/api/max/health/check", async (req, res) => {
+    try {
+      const { checkBot } = await import("./automation");
+      res.json(await checkBot());
+    } catch (e) { fail(res, e); }
+  });
+  app.post("/api/max/director-report", async (req, res) => {
+    try {
+      if (req.authUser?.role !== "director") return res.status(403).json({ error: "Отчёт директору — у директора" });
+      const { directorReportText } = await import("./automation");
+      const text = await directorReportText();
+      const ids = String(maxSettings().directorChatIds ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+      if (!ids.length) throw new Error("Не отмечен профиль директора в блоке «Кнопки в MAX по ролям»");
+      const { sendMaxMenu } = await import("./max");
+      for (const id of ids) await sendMaxMenu(id, text, [], "html");
+      res.json({ sent: ids.length, text });
     } catch (e) { fail(res, e); }
   });
 
@@ -1041,12 +1067,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /** Прислать напоминание ответственным сейчас */
   app.post("/api/sms/reminder/send", async (req, res) => {
     try {
-      const { rows, text } = calloutReminder();
-      if (rows.length === 0) throw new Error("Сейчас никого вызывать не нужно");
-      const { notifyResponsible } = await import("./max");
-      const out = await notifyResponsible(text, "decline");
-      audit(req, "Напоминание о вызовах", "sms", `людей ${rows.length}`);
-      res.json({ ...out, count: rows.length });
+      const { sendCalloutReminder } = await import("./sms");
+      const out = await sendCalloutReminder();
+      if (out.rows === 0) throw new Error("Сейчас никого вызывать не нужно");
+      audit(req, "Напоминание о вызовах", "sms", `людей ${out.rows}`);
+      res.json({ sent: out.sent, count: out.rows });
     } catch (e) { fail(res, e); }
   });
 

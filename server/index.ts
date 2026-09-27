@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { startSmsScheduler, startMaxDigestScheduler } from "./sms";
 import { startMaxPolling } from "./max";
 import { startDailyScheduler } from "./daily";
+import { startAutomationScheduler } from "./automation";
 
 const app = express();
 const httpServer = createServer(app);
@@ -72,6 +73,7 @@ app.use((req, res, next) => {
   // привязка сотрудников к боту MAX происходит сама после перехода по ссылке
   startMaxPolling();
   startDailyScheduler();
+  startAutomationScheduler();
   startMaxDigestScheduler();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

@@ -116,6 +116,18 @@ export function DailyTab() {
   const picked: string[] = String(form?.chatIds ?? "").split(",").map((x: string) => x.trim()).filter(Boolean);
   const toggle = (id: string, on: boolean) =>
     setForm({ ...form, chatIds: (on ? [...picked, id] : picked.filter((x) => x !== id)).join(",") });
+  // участки для выбора: из текущей сводки + ЦПП
+  const objectNames: string[] = [...(q.data?.summary?.objects ?? []).map((o: any) => String(o.object)), "ЦПП"];
+  const [objFor, setObjFor] = useState<string>("");
+  const chatObjects: Record<string, string[]> = form?.chatObjects ?? {};
+  const setChatObj = (id: string, name: string, on: boolean) => {
+    const cur = chatObjects[id]?.length ? chatObjects[id] : objectNames;
+    const next = on ? Array.from(new Set([...cur, name])) : cur.filter((x) => x !== name);
+    const all = objectNames.every((n) => next.includes(n));
+    const copy = { ...chatObjects };
+    if (all || !next.length) delete copy[id]; else copy[id] = next;
+    setForm({ ...form, chatObjects: copy });
+  };
 
   const m = mailQ.data;
   const mailState: { tone: string; title: string; text: string } = !m ? { tone: "muted", title: "", text: "" }
@@ -325,14 +337,42 @@ export function DailyTab() {
                     {linked.map((r: any) => {
                       const id = String(r.chatId);
                       const on = picked.includes(id);
+                      const own = chatObjects[id];
                       return (
-                        <label key={id} className={`flex items-center gap-2 rounded-md border px-2 py-1 ${on ? "border-primary bg-muted" : ""}`}
+                        <div key={id} className={`flex items-center gap-1 rounded-md border px-2 py-1 ${on ? "border-primary bg-muted" : ""}`}
                           data-testid={`daily-recipient-${r.employeeId}`}>
-                          <Checkbox checked={on} onCheckedChange={(v) => toggle(id, !!v)} />
-                          {r.fio}
-                        </label>
+                          <label className="flex items-center gap-2">
+                            <Checkbox checked={on} onCheckedChange={(v) => toggle(id, !!v)} />
+                            {r.fio}
+                          </label>
+                          {on && (
+                            <button type="button" className="ml-1 rounded bg-background px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                              onClick={() => setObjFor(objFor === id ? "" : id)} data-testid={`button-daily-objects-${r.employeeId}`}>
+                              {own?.length ? `участки: ${own.length}` : "все участки"} ▾
+                            </button>
+                          )}
+                        </div>
                       );
                     })}
+                  </div>
+                )}
+                {objFor && (
+                  <div className="mt-2 rounded-md border bg-background p-2 text-sm" data-testid="box-daily-objects">
+                    <div className="mb-1 text-xs text-muted-foreground">
+                      Какие участки видит {linked.find((r: any) => String(r.chatId) === objFor)?.fio} — в утренней сводке, в изменениях и по кнопке «Сводка»
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {objectNames.map((n) => {
+                        const cur = chatObjects[objFor]?.length ? chatObjects[objFor] : objectNames;
+                        return (
+                          <label key={n} className="flex items-center gap-1.5 rounded border px-2 py-0.5">
+                            <Checkbox checked={cur.includes(n)} onCheckedChange={(v) => setChatObj(objFor, n, !!v)} />
+                            {n}
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">Не забудьте нажать «Сохранить».</div>
                   </div>
                 )}
               </div>
@@ -621,6 +661,8 @@ export function MailTab() {
         </div>
       </Section>
 
+      <RequestsBox />
+
       <Section
         title="Журнал почты"
         description={form.lastCheck ? `Последняя проверка ${dt(form.lastCheck)}: ${form.lastResult}` : "Проверок ещё не было"}
@@ -861,5 +903,36 @@ export function FilesTab() {
         )}
       </Section>
     </div>
+  );
+}
+
+
+/** Заявки на материалы, пришедшие с почты: пока списком файлов */
+function RequestsBox() {
+  const q = useQuery<any>({ queryKey: ["/api/pbk/requests"] });
+  const rows: any[] = q.data?.rows ?? [];
+  return (
+    <Section
+      title="Заявки на материалы"
+      description="Файлы с «заявк» в названии от ваших адресов. Программа их не смешивает со сводками. Разбор по позициям (участок, дата, материалы) появится после образца файла."
+    >
+      {rows.length === 0 ? <Empty text="Заявок с почты пока не было." /> : (
+        <div className="space-y-1" data-testid="list-requests">
+          {rows.slice(0, 50).map((r) => (
+            <div key={r.file} className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm">
+              <span>
+                <b>{r.name}</b>
+                <span className="ml-2 text-xs text-muted-foreground">{r.day.split("-").reverse().join(".")} · {r.from}{r.subject ? ` · «${r.subject}»` : ""}</span>
+              </span>
+              <Button size="sm" variant="outline" className="h-7"
+                onClick={() => downloadFile(`/api/pbk/requests/file?f=${encodeURIComponent(r.file)}`, r.name)}
+                data-testid={`button-request-${r.file}`}>
+                <Download className="mr-1 h-3.5 w-3.5" />Скачать
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
   );
 }

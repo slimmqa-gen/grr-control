@@ -408,6 +408,11 @@ export type MaxSettings = {
   masterOffAllowed: string;
   /** Сообщать сотруднику, что его вахту перенесли или отменили */
   notifyShiftChanges: boolean;
+  /** утренний отчёт директору в 9:30 */
+  directorReport: boolean;
+  directorReportDate: string;
+  /** напоминать сотруднику о заезде за 3 дня и за 1 день */
+  remindBefore: boolean;
 };
 export const DEFAULT_MAX_SETTINGS: MaxSettings = {
   enabled: false, token: "", botName: "", marker: 0,
@@ -416,6 +421,7 @@ export const DEFAULT_MAX_SETTINGS: MaxSettings = {
   notifyDecline: true, notifyMessage: true, notifyConfirm: false, duplicateSms: false,
   messageChatIds: "", chatUserIds: "",
   directorChatIds: "", masterChatIds: "", masterOffAllowed: "", notifyShiftChanges: true,
+  directorReport: true, directorReportDate: "", remindBefore: true,
 };
 
 /** Журнал СМС-уведомлений: что, кому и когда отправлено */

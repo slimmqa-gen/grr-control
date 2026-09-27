@@ -698,6 +698,17 @@ export default function Crew() {
   const { user: me } = useAuth();
   const isDir = me?.role === "director";
   const appUsers = useQuery<any>({ queryKey: ["/api/users"], enabled: isDir });
+  const health = useQuery<any>({ queryKey: ["/api/max/health"], refetchInterval: 60_000 });
+  const checkBot = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/max/health/check", {})).json(),
+    onSuccess: (d: any) => { queryClient.invalidateQueries({ queryKey: ["/api/max/health"] }); toast({ title: d.ok ? "Бот работает" : "Бот работает с ошибкой", description: d.note }); },
+    onError: (e: any) => toast({ title: "Проверка не удалась", description: String(e?.message ?? e), variant: "destructive" }),
+  });
+  const dirReport = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/max/director-report", {})).json(),
+    onSuccess: () => toast({ title: "Отчёт отправлен в MAX" }),
+    onError: (e: any) => toast({ title: "Отчёт не отправлен", description: String(e?.message ?? e), variant: "destructive" }),
+  });
   const broadcastMenu = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/max/menu-broadcast", {})).json(),
     onSuccess: (d: any) => toast({ title: `Меню отправляется: ${d.total} чел.`, description: "Сообщения уходят по очереди, это займёт до минуты." }),
@@ -3135,6 +3146,45 @@ export default function Crew() {
                         />
                         Сообщать сотруднику о назначении, переносе и отмене его вахты
                       </label>
+                      <label className="mt-1 flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={maxF.remindBefore !== false}
+                          onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, remindBefore: v })}
+                          data-testid="check-remind-before"
+                        />
+                        Напоминать сотруднику о заезде за 3 дня и за 1 день (только если вызов уже отправлен)
+                      </label>
+                      <label className="mt-1 flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={maxF.directorReport !== false}
+                          onCheckedChange={(v: boolean) => setMaxForm({ ...maxF, directorReport: v })}
+                          data-testid="check-director-report"
+                        />
+                        Утренний отчёт директору в 9:30: сводки, вызовы, подтверждения, бот, резервные копии
+                      </label>
+                      <div className="mt-2 rounded-md border bg-background p-2 text-xs" data-testid="box-system-health">
+                        <div className="mb-1 font-semibold">Состояние системы</div>
+                        <div>
+                          Бот MAX: {health.data?.bot?.at
+                            ? `${health.data.bot.ok ? "🟢" : "🔴"} ${health.data.bot.note} · проверка ${new Date(health.data.bot.at).toLocaleString("ru-RU", { timeZone: "Asia/Krasnoyarsk" })}`
+                            : "ещё не проверялся"}
+                        </div>
+                        <div>
+                          Резервная копия: {health.data?.backup
+                            ? `${new Date(health.data.backup.at).toLocaleString("ru-RU", { timeZone: "Asia/Krasnoyarsk" })} · в облако: ${health.data.backup.offsite === "ok" ? "🟢 выгружено" : `⚠️ ${health.data.backup.offsite}`}`
+                            : "⚠️ ещё не было"}
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline" className="h-7" disabled={checkBot.isPending} onClick={() => checkBot.mutate()} data-testid="button-check-bot">
+                            Проверить бота
+                          </Button>
+                          {isDir && (
+                            <Button size="sm" variant="outline" className="h-7" disabled={dirReport.isPending} onClick={() => dirReport.mutate()} data-testid="button-director-report">
+                              Прислать отчёт директору сейчас
+                            </Button>
+                          )}
+                        </div>
+                      </div>
                       {isDir && (
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <Button size="sm" variant="outline" disabled={broadcastMenu.isPending}

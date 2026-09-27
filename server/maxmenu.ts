@@ -159,12 +159,14 @@ export function menuRows(role: MaxRole, chatId: string): Btn[][] {
       return [
         [b("📍 Кто где", "crew"), b("📊 Сводка", "summary")],
         [b("🚐 Заезды", "callout"), b("🔄 Смена вахт", "rotation")],
-        [b("📋 События", "events"), b("👷 Люди", "people")],
+        [b("📨 Вызовы", "callouts"), b("📋 События", "events")],
+        [b("👷 Люди", "people")],
       ];
     case "responsible":
       return [
         [b("📍 Кто где", "crew"), b("📊 Сводка", "summary")],
-        [b("🚐 Заезды", "callout"), b("📋 События", "events")],
+        [b("🚐 Заезды", "callout"), b("📨 Вызовы", "callouts")],
+        [b("📋 События", "events")],
       ];
     case "master": {
       const rows: Btn[][] = [];
@@ -213,6 +215,12 @@ export async function handleMenu(chatId: string, cmd: string): Promise<void> {
     case "myshift":
       await sendMaxMenu(chatId, myShiftText(empId), rows, "html");
       return;
+    case "callouts": {
+      const { sendCalloutReminder } = await import("./sms");
+      const out = await sendCalloutReminder([chatId]);
+      if (!out.rows) await sendMaxMenu(chatId, "✅ Все вызовы на ближайшие дни уже отправлены.", rows, "html");
+      return;
+    }
     case "write":
       await sendMax(chatId, "✉️ Напишите сообщение одним текстом — я передам его руководителю.");
       return;
@@ -224,8 +232,8 @@ export async function handleMenu(chatId: string, cmd: string): Promise<void> {
     }
     case "summary":
     case "people": {
-      const { dailySummary, summaryHtml, workersHtml, sendToRecipients } = await import("./daily");
-      const s = dailySummary();
+      const { dailySummary, summaryHtml, workersHtml, sendToRecipients, summaryFor } = await import("./daily");
+      const s = summaryFor(dailySummary(), chatId);
       await sendToRecipients(cmd === "people" ? workersHtml(s) : summaryHtml(s), [chatId], "html");
       await sendMaxMenu(chatId, "Меню:", rows, "html");
       return;
@@ -286,6 +294,10 @@ export async function notifyShiftChange(before: any, after: any | null) {
     if (before.endDate < day && (!after || after.endDate < day)) return;
     const chatId = maxChatId(before.employeeId);
     if (!chatId) return;
+    // сотрудник узнаёт о вахте из вызова; пока вызов не отправлен — ему не пишем
+    const called = (storage.smsLog() as any[]).some((l) =>
+      l.shiftId === before.id && ["callout", "max-callout"].includes(String(l.kind)) && l.status === "sent");
+    if (!called) return;
     const place = (id: number) => objName(id) || "участок не указан";
     let text = "";
     if (!after) {
