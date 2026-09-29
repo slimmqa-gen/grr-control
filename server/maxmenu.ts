@@ -91,13 +91,13 @@ export function myShiftText(employeeId: number): string {
   const out: string[] = [];
   if (cur) {
     out.push(`🟢 <b>Вы на вахте</b>`, `Участок: <b>${esc(objName(cur.objectId) || "не указан")}</b>`,
-      `С ${ru(cur.startDate)} по <b>${ru(cur.endDate)}</b>`);
+      ru(cur.endDate) ? `С ${ru(cur.startDate)} по <b>${ru(cur.endDate)}</b>` : `С ${ru(cur.startDate)}, дата выезда <b>пока не определена</b>`);
   }
   if (next) {
     if (out.length) out.push("");
     out.push(`🔵 <b>${cur ? "Следующая вахта" : "Вам назначена вахта"}</b>`,
       `Участок: <b>${esc(objName(next.objectId) || "не указан")}</b>`,
-      `Заезд: <b>${ru(next.startDate)}</b>`, `Выезд: ${ru(next.endDate)}`);
+      `Заезд: <b>${ru(next.startDate)}</b>`, `Выезд: ${ru(next.endDate) || "не определена"}`);
   }
   if (!out.length) return "⚪ Вахта вам пока не назначена. Как только её назначат — я сразу сообщу.";
   out.push("", "<i>Если даты изменятся — пришлю сообщение.</i>");
@@ -123,7 +123,7 @@ export function rotationText(objectIds: number[] | null, days = 14): string {
     any = true;
     out.push("━━━━━━━━━━━━━━", `<b>${esc((objName(oid) || "Без участка").toUpperCase())}</b>`);
     out.push(`🟢 На участке сейчас: ${now.length}`);
-    for (const s of now) out.push(`   • ${esc(fio(s.employeeId))} — до ${dm(s.endDate)}`);
+    for (const s of now) out.push(`   • ${esc(fio(s.employeeId))} — ${dm(s.endDate) ? `до ${dm(s.endDate)}` : "выезд не определён"}`);
     if (arrive.length) {
       out.push(`🔵 Заезжают:`);
       for (const s of arrive) out.push(`   • ${esc(fio(s.employeeId))} — <b>${dm(s.startDate)}</b>`);
@@ -301,14 +301,14 @@ export async function notifyShiftChange(before: any, after: any | null) {
     const place = (id: number) => objName(id) || "участок не указан";
     let text = "";
     if (!after) {
-      text = `🔴 <b>Вахта отменена</b>\nУчасток: ${esc(place(before.objectId))}\nБыло: ${ru(before.startDate)} — ${ru(before.endDate)}\n\n<i>Если есть вопросы — нажмите «Написать сообщение».</i>`;
+      text = `🔴 <b>Вахта отменена</b>\nУчасток: ${esc(place(before.objectId))}\nБыло: ${ru(before.startDate)} — ${ru(before.endDate) || "без даты выезда"}\n\n<i>Если есть вопросы — нажмите «Написать сообщение».</i>`;
     } else {
       const changes: string[] = [];
       if (after.startDate !== before.startDate) changes.push(`Заезд: ${ru(before.startDate)} → <b>${ru(after.startDate)}</b>`);
-      if (after.endDate !== before.endDate) changes.push(`Выезд: ${ru(before.endDate)} → <b>${ru(after.endDate)}</b>`);
+      if (after.endDate !== before.endDate) changes.push(`Выезд: ${ru(before.endDate) || "не определена"} → <b>${ru(after.endDate) || "не определена"}</b>`);
       if (after.objectId !== before.objectId) changes.push(`Участок: ${esc(place(before.objectId))} → <b>${esc(place(after.objectId))}</b>`);
       if (!changes.length) return;
-      text = [`🟡 <b>Вахта изменена</b>`, ...changes, "", `Сейчас: ${esc(place(after.objectId))}, ${ru(after.startDate)} — ${ru(after.endDate)}`].join("\n");
+      text = [`🟡 <b>Вахта изменена</b>`, ...changes, "", `Сейчас: ${esc(place(after.objectId))}, ${ru(after.startDate)} — ${ru(after.endDate) || "выезд не определён"}`].join("\n");
     }
     await sendMaxMenu(chatId, text, menuRows(roleOf(chatId), chatId), "html");
   } catch (e) {

@@ -14,7 +14,7 @@ const SMSC_BALANCE = "https://smsc.ru/sys/balance.php";
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 const todayIso = () => iso(new Date());
-const ruDate = (s: string) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)}` : "");
+const ruDate = (s: string) => (s === "9999-12-31" ? "не определена" : s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)}` : "");
 
 export function smsSettings(): SmsSettings {
   const raw = storage.getSetting("sms");

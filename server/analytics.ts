@@ -277,14 +277,15 @@ export function buildAnalytics() {
   const rotation = activeShifts.map((s) => {
     const e = empById.get(s.employeeId);
     const daysWorked = Math.round((now.getTime() - new Date(s.startDate).getTime()) / 86400000) + 1;
-    const daysLeft = Math.round((new Date(s.endDate).getTime() - now.getTime()) / 86400000);
+    const openEnd = s.endDate === "9999-12-31";
+    const daysLeft = openEnd ? 9999 : Math.round((new Date(s.endDate).getTime() - now.getTime()) / 86400000);
     const cycleDays = Number(s.cycleType.split("/")[0]) || 30;
     return {
       shiftId: s.id, employeeId: s.employeeId,
       fio: e?.fio ?? "—", position: e?.position ?? "—", phone: e?.phone ?? "",
       object: objName(s.objectId), objectId: s.objectId,
       startDate: s.startDate, endDate: s.endDate, cycleType: s.cycleType,
-      daysWorked, daysLeft, overtime: daysWorked > cycleDays,
+      daysWorked, daysLeft, overtime: !openEnd && daysWorked > cycleDays, openEnd,
       replacementAssigned: s.replacementAssigned === 1,
     };
   }).sort((a, b) => a.daysLeft - b.daysLeft);
@@ -540,6 +541,7 @@ export function buildAnalytics() {
 
 export function ruDate(s: string) {
   if (!s) return "—";
+  if (s === "9999-12-31") return "не определена";
   const [y, m, d] = s.split("-");
   return `${d}.${m}.${y}`;
 }

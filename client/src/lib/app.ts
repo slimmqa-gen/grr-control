@@ -13,6 +13,7 @@ export const pct = (v: number, d = 1) => `${nf(v || 0, d)} %`;
 
 export function ruDate(iso: string) {
   if (!iso) return "—";
+  if (iso === "9999-12-31") return "не определена";
   const [y, m, d] = iso.split("-");
   return `${d}.${m}.${y}`;
 }

@@ -111,7 +111,7 @@ export async function remindEmployees(): Promise<{ sent: number }> {
     const place = objs.find((o) => o.name === c.object)?.name ?? c.object;
     const when = c.daysLeft === 1 ? "<b>завтра</b>" : `через <b>${c.daysLeft} дня</b>`;
     const text = [`🔔 <b>Напоминание о заезде</b>`, `Заезд ${when}, ${ru(c.startDate)}.`,
-      `Участок: <b>${esc(place)}</b>`, `Выезд: ${ru(c.endDate)}`, "",
+      `Участок: <b>${esc(place)}</b>`, `Выезд: ${c.endDate === "9999-12-31" ? "не определена" : ru(c.endDate)}`, "",
       c.answer === "confirm" ? "<i>Вы подтвердили заезд. Если планы изменились — нажмите «Не смогу».</i>"
         : "<i>Подтвердите, пожалуйста, кнопкой ниже.</i>"].join("\n");
     try {

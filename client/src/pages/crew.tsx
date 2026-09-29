@@ -22,6 +22,7 @@ import { PageHeader, Section, Empty, Loading, ErrorBox, ExportButton, Kpi } from
 import { nf, ruDate, todayIso, downloadFile, levelBadge, levelText, type Level } from "@/lib/app";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
+import { PlanTab } from "./crew-plan";
 
 const NO_OBJECT = "0";
 
@@ -157,7 +158,7 @@ export default function Crew() {
   const { toast } = useToast();
 
   const [tab, setTab] = useState<
-    "dash" | "people" | "shifts" | "absence" | "arch" | "cal" | "sms" | "chat" | "events" | "setup"
+    "dash" | "people" | "shifts" | "plan" | "absence" | "arch" | "cal" | "sms" | "chat" | "events" | "setup"
   >("dash");
   // эти вкладки работают с одними данными: рассылка, переписка, события и настройки каналов
   const notifyTab = tab === "sms" || tab === "chat" || tab === "events" || tab === "setup";
@@ -190,7 +191,7 @@ export default function Crew() {
   const [empError, setEmpError] = useState("");
 
   const [shiftDialog, setShiftDialog] = useState<{ open: boolean; ids: number[] }>({ open: false, ids: [] });
-  const [shiftForm, setShiftForm] = useState({ startDate: todayIso(), endDate: "", objectId: "keep" });
+  const [shiftForm, setShiftForm] = useState({ startDate: todayIso(), endDate: "", objectId: "keep", openEnd: false });
   const [shiftError, setShiftError] = useState("");
 
   const [bulkDialog, setBulkDialog] = useState<null | "object" | "position">(null);
@@ -207,7 +208,7 @@ export default function Crew() {
 
   // редактирование фактических дат вахты
   const [shiftEditDialog, setShiftEditDialog] = useState<{ open: boolean; id: number | null; fio: string }>({ open: false, id: null, fio: "" });
-  const [shiftEditForm, setShiftEditForm] = useState({ startDate: "", endDate: "" });
+  const [shiftEditForm, setShiftEditForm] = useState({ startDate: "", endDate: "", openEnd: false });
   const [shiftEditError, setShiftEditError] = useState("");
 
   // кадровая аналитика по сотруднику
@@ -373,7 +374,8 @@ export default function Crew() {
 
   const openEditShiftDates = (r: any) => {
     setShiftEditError("");
-    setShiftEditForm({ startDate: r.startDate, endDate: r.endDate });
+    const open = r.endDate === "9999-12-31";
+    setShiftEditForm({ startDate: r.startDate, endDate: open ? "" : r.endDate, openEnd: open });
     setShiftEditDialog({ open: true, id: r.shiftId ?? r.id, fio: r.fio });
   };
 
@@ -467,7 +469,8 @@ export default function Crew() {
       return (await apiRequest("POST", "/api/employees/bulk-shift", {
         ids: shiftDialog.ids,
         startDate: shiftForm.startDate,
-        endDate: shiftForm.endDate,
+        endDate: shiftForm.openEnd ? "" : shiftForm.endDate,
+        openEnd: shiftForm.openEnd,
         objectId: shiftForm.objectId === "keep" ? 0 : Number(shiftForm.objectId),
       })).json();
     },
@@ -530,7 +533,8 @@ export default function Crew() {
   const saveShiftDates = useMutation({
     mutationFn: async () =>
       (await apiRequest("PATCH", `/api/shifts/${shiftEditDialog.id}`, {
-        startDate: shiftEditForm.startDate, endDate: shiftEditForm.endDate,
+        startDate: shiftEditForm.startDate,
+        ...(shiftEditForm.openEnd ? { openEnd: true } : { endDate: shiftEditForm.endDate }),
       })).json(),
     onSuccess: () => {
       queryClient.invalidateQueries();
@@ -933,9 +937,10 @@ export default function Crew() {
         object: objName(s.objectId) || "не указан", objectId: s.objectId,
         startDate: s.startDate, endDate: s.endDate, cycleType: s.cycleType,
         daysWorked: period === "planned" ? 0 : days(s.startDate, period === "done" ? s.endDate : today) + 1,
-        daysLeft: days(today, s.endDate),
+        daysLeft: s.endDate === "9999-12-31" ? 99999 : days(today, s.endDate),
+        openEnd: s.endDate === "9999-12-31",
         daysToStart: days(today, s.startDate),
-        overtime: period !== "planned" && cycleDays > 0 && days(s.startDate, s.endDate) + 1 > cycleDays,
+        overtime: s.endDate !== "9999-12-31" && period !== "planned" && cycleDays > 0 && days(s.startDate, s.endDate) + 1 > cycleDays,
         replacementAssigned: s.replacementAssigned === 1,
         period,
       };
@@ -1063,7 +1068,7 @@ export default function Crew() {
   /** Даты заезда и выезда задаёт пользователь, цикл считается по ним */
   const openAssign = (ids: number[]) => {
     setShiftError("");
-    setShiftForm({ startDate: todayIso(), endDate: "", objectId: "keep" });
+    setShiftForm({ startDate: todayIso(), endDate: "", objectId: "keep", openEnd: false });
     setShiftDialog({ open: true, ids });
   };
 
@@ -1141,6 +1146,15 @@ export default function Crew() {
               {nf(absCounters.endingSoon)}
             </Badge>
           )}
+        </Button>
+        <Button
+          size="sm"
+          variant={tab === "plan" ? "default" : "ghost"}
+          onClick={() => setTab("plan")}
+          data-testid="tab-plan"
+        >
+          <CalendarPlus className="mr-2 h-4 w-4" />
+          Предварительный заезд
         </Button>
         <Button
           size="sm"
@@ -1975,7 +1989,7 @@ export default function Crew() {
                           <td className="num py-2 pr-3 whitespace-nowrap">{ruDate(r.startDate)}</td>
                           <td className="num py-2 pr-3 whitespace-nowrap">{ruDate(r.endDate)}</td>
                           <td className={cn("num py-2 pr-3 text-right font-medium", r.period === "current" ? levelText[lvl] : "")}>
-                            {r.period === "current" ? nf(r.daysLeft) : r.period === "planned" ? "до заезда" : "завершена"}
+                            {r.period === "current" ? (r.openEnd ? "дата выезда не определена" : nf(r.daysLeft)) : r.period === "planned" ? "до заезда" : "завершена"}
                             {r.overtime && r.period === "current" && <span className="ml-1 text-xs">переработка</span>}
                           </td>
                           <td className="py-2">
@@ -2059,6 +2073,8 @@ export default function Crew() {
         </>
       )}
 
+
+      {tab === "plan" && <PlanTab employees={emps} objects={objects} />}
 
       {tab === "arch" && (
         <>
@@ -2149,7 +2165,7 @@ export default function Crew() {
                   <tbody>
                     {(archAll ? archRows : archRows.slice(0, 100)).map((r: any) => {
                       const today = todayIso();
-                      const stateText = r.endDate < today ? "завершена" : r.startDate > today ? "запланирована" : "идёт";
+                      const stateText = r.endDate < today ? "завершена" : r.startDate > today ? "запланирована" : r.openEnd ? "идёт, выезд не определён" : "идёт";
                       return (
                         <tr
                           key={r.shiftId} className="cursor-pointer border-b hover:bg-muted/50"
@@ -2168,7 +2184,16 @@ export default function Crew() {
                           <td className="py-2 pr-3">
                             <Badge variant="outline" className="text-[11px]">{stateText}</Badge>
                           </td>
-                          <td className="py-2 pr-0 text-right">
+                          <td className="py-2 pr-0 text-right whitespace-nowrap">
+                            <Button
+                              size="icon" variant="ghost" className="h-7 w-7"
+                              aria-label={`Изменить даты: ${r.fio}`}
+                              title="Изменить даты заезда и выезда"
+                              data-testid={`arch-edit-${r.shiftId}`}
+                              onClick={(e) => { e.stopPropagation(); openEditShiftDates(r); }}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
                             <Button
                               size="icon" variant="ghost" className="h-7 w-7"
                               aria-label={`Аналитика по ${r.fio}`}
@@ -4218,14 +4243,23 @@ export default function Crew() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium">Дата выезда *</label>
+              <label className="mb-1 block text-xs font-medium">Дата выезда</label>
               <Input
                 type="date"
-                value={shiftForm.endDate}
+                value={shiftForm.openEnd ? "" : shiftForm.endDate}
                 min={shiftForm.startDate}
+                disabled={shiftForm.openEnd}
                 onChange={(e) => setShiftForm({ ...shiftForm, endDate: e.target.value })}
                 data-testid="input-end"
               />
+              <label className="mt-1 flex items-center gap-1.5 text-xs">
+                <Checkbox
+                  checked={shiftForm.openEnd}
+                  onCheckedChange={(v) => setShiftForm({ ...shiftForm, openEnd: !!v, endDate: v ? "" : shiftForm.endDate })}
+                  data-testid="check-open-end"
+                />
+                не определена — поставлю позже
+              </label>
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium">Объект вахты</label>
@@ -4240,7 +4274,7 @@ export default function Crew() {
             <div>
               <label className="mb-1 block text-xs font-medium">Цикл (расчёт)</label>
               <Input
-                value={assignDays ? `${assignDays}/${assignDays} — дней на вахте: ${nf(assignDays)}` : "—"}
+                value={shiftForm.openEnd ? "без даты выезда" : assignDays ? `${assignDays}/${assignDays} — дней на вахте: ${nf(assignDays)}` : "—"}
                 readOnly
                 data-testid="text-cycle"
               />
@@ -4254,8 +4288,9 @@ export default function Crew() {
             <Button
               onClick={() => {
                 setShiftError("");
-                if (!shiftForm.startDate || !shiftForm.endDate) return setShiftError("Укажите даты заезда и выезда.");
-                if (shiftForm.endDate < shiftForm.startDate) return setShiftError("Дата выезда раньше даты заезда.");
+                if (!shiftForm.startDate) return setShiftError("Укажите дату заезда.");
+                if (!shiftForm.openEnd && !shiftForm.endDate) return setShiftError("Укажите дату выезда или отметьте «не определена».");
+                if (!shiftForm.openEnd && shiftForm.endDate < shiftForm.startDate) return setShiftError("Дата выезда раньше даты заезда.");
                 assignShift.mutate();
               }}
               disabled={assignShift.isPending}
@@ -4290,13 +4325,22 @@ export default function Crew() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium">Дата выезда *</label>
+              <label className="mb-1 block text-xs font-medium">Дата выезда</label>
               <Input
                 type="date"
-                value={shiftEditForm.endDate}
+                value={shiftEditForm.openEnd ? "" : shiftEditForm.endDate}
+                disabled={shiftEditForm.openEnd}
                 onChange={(e) => setShiftEditForm({ ...shiftEditForm, endDate: e.target.value })}
                 data-testid="input-edit-shift-end"
               />
+              <label className="mt-1 flex items-center gap-1.5 text-xs">
+                <Checkbox
+                  checked={shiftEditForm.openEnd}
+                  onCheckedChange={(v) => setShiftEditForm({ ...shiftEditForm, openEnd: !!v, endDate: v ? "" : shiftEditForm.endDate })}
+                  data-testid="check-edit-open-end"
+                />
+                не определена
+              </label>
             </div>
           </div>
           {shiftEditError && <div className="mt-2"><ErrorBox text={shiftEditError} /></div>}
@@ -4307,8 +4351,9 @@ export default function Crew() {
             <Button
               onClick={() => {
                 setShiftEditError("");
-                if (!shiftEditForm.startDate || !shiftEditForm.endDate) return setShiftEditError("Укажите обе даты.");
-                if (shiftEditForm.endDate < shiftEditForm.startDate) return setShiftEditError("Дата выезда раньше даты заезда.");
+                if (!shiftEditForm.startDate) return setShiftEditError("Укажите дату заезда.");
+                if (!shiftEditForm.openEnd && !shiftEditForm.endDate) return setShiftEditError("Укажите дату выезда или отметьте «не определена».");
+                if (!shiftEditForm.openEnd && shiftEditForm.endDate < shiftEditForm.startDate) return setShiftEditError("Дата выезда раньше даты заезда.");
                 saveShiftDates.mutate();
               }}
               disabled={saveShiftDates.isPending}

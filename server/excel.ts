@@ -168,7 +168,7 @@ export async function buildWorkbook(sheets: SheetKey[]): Promise<ExcelJS.Workboo
     styleSheet(ws, [24, 22, 24, 14, 14, 10, 18, 16, 18, 20]);
     a.rotation.forEach((r) =>
       ws.addRow({ f: r.fio, p: r.position, o: r.object, s: ruDate(r.startDate),
-        e: ruDate(r.endDate), c: r.cycleType, dw: r.daysWorked, dl: r.daysLeft,
+        e: ruDate(r.endDate), c: r.cycleType, dw: r.daysWorked, dl: (r as any).openEnd ? "не определена" : r.daysLeft,
         r: r.replacementAssigned ? "да" : "нет", ph: r.phone }));
 
     const ws2 = wb.addWorksheet("Укомплектованность объектов");

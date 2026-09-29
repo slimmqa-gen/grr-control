@@ -104,6 +104,15 @@ function migrateWorkStatusOnce() {
   }
 }
 
+const OPEN_END = "9999-12-31";
+import { pdb as planDb } from "./pbkdb";
+/** Таблица предварительного заезда: планы, которые ещё не стали вахтой */
+function pdbPlans() {
+  planDb.exec(`CREATE TABLE IF NOT EXISTS shift_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, object_id INTEGER NOT NULL DEFAULT 0,
+    start_date TEXT NOT NULL, end_date TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '')`);
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   seedEstimates();
   migrateWorkStatusOnce();
@@ -667,34 +676,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /** Массовое назначение вахты выбранным сотрудникам */
   /** Цикл считается по фактическим датам: 30 дней на вахте → «30/30» */
   const shiftCycle = (startDate: string, endDate: string) => {
+    if (endDate === OPEN_END) return "без даты выезда";
     const days = Math.round(
       (new Date(endDate + "T00:00:00Z").getTime() - new Date(startDate + "T00:00:00Z").getTime()) / 86400000,
     ) + 1;
     return `${days}/${days}`;
   };
 
-  app.post("/api/employees/bulk-shift", (req, res) => {
-    try {
-      const ids: number[] = Array.isArray(req.body?.ids) ? req.body.ids.map(Number) : [];
-      const startDate = String(req.body?.startDate ?? "").slice(0, 10);
-      const objectId = Number(req.body?.objectId ?? 0) || 0;
-      const isoRe = /^\d{4}-\d{2}-\d{2}$/;
-      if (!ids.length) throw new Error("Выберите хотя бы одного сотрудника");
-      if (!isoRe.test(startDate)) throw new Error("Укажите дату заезда");
-
-      // Даты задаёт пользователь: выезд приходит явно, а цикл считается по числу дней.
-      // Старый вариант с циклом вместо даты выезда оставлен для совместимости.
-      let endDate = String(req.body?.endDate ?? "").slice(0, 10);
-      if (!endDate) {
-        const days = Number(String(req.body?.cycleType ?? "").split("/")[0]);
-        if (!days || days < 1) throw new Error("Укажите дату выезда");
-        const end = new Date(startDate + "T00:00:00Z");
-        end.setUTCDate(end.getUTCDate() + days - 1);
-        endDate = end.toISOString().slice(0, 10);
-      }
-      if (!isoRe.test(endDate)) throw new Error("Укажите дату выезда");
-      if (endDate < startDate) throw new Error("Дата выезда не может быть раньше даты заезда");
-      const cycleType = shiftCycle(startDate, endDate);
+  /** Назначить вахту: общая часть для обычного назначения и предварительного заезда */
+  const assignShiftsCore = (ids: number[], startDate: string, endDate: string, objectId: number) => {
+    const cycleType = shiftCycle(startDate, endDate);
       const emps = storage.employees();
       const todayIso = new Date().toISOString().slice(0, 10);
       const dayBefore = (iso: string) => {
@@ -731,8 +722,109 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
         created++;
       }
+    return created;
+  };
+
+  app.post("/api/employees/bulk-shift", (req, res) => {
+    try {
+      const ids: number[] = Array.isArray(req.body?.ids) ? req.body.ids.map(Number) : [];
+      const startDate = String(req.body?.startDate ?? "").slice(0, 10);
+      const objectId = Number(req.body?.objectId ?? 0) || 0;
+      const isoRe = /^\d{4}-\d{2}-\d{2}$/;
+      if (!ids.length) throw new Error("Выберите хотя бы одного сотрудника");
+      if (!isoRe.test(startDate)) throw new Error("Укажите дату заезда");
+
+      // Даты задаёт пользователь: выезд приходит явно, а цикл считается по числу дней.
+      // Старый вариант с циклом вместо даты выезда оставлен для совместимости.
+      let endDate = String(req.body?.endDate ?? "").slice(0, 10);
+      // выезд может быть не определён: вахта считается идущей, пока дату не поставят
+      if (req.body?.openEnd) endDate = OPEN_END;
+      if (!endDate) {
+        const days = Number(String(req.body?.cycleType ?? "").split("/")[0]);
+        if (!days || days < 1) throw new Error("Укажите дату выезда");
+        const end = new Date(startDate + "T00:00:00Z");
+        end.setUTCDate(end.getUTCDate() + days - 1);
+        endDate = end.toISOString().slice(0, 10);
+      }
+      if (!isoRe.test(endDate)) throw new Error("Укажите дату выезда");
+      if (endDate < startDate) throw new Error("Дата выезда не может быть раньше даты заезда");
+      const cycleType = shiftCycle(startDate, endDate);
+      const created = assignShiftsCore(ids, startDate, endDate, objectId);
       audit(req, "Назначение вахты", "employees", `Сотрудников: ${created}, заезд ${startDate}, цикл ${cycleType}`);
       res.json({ ok: true, created, endDate });
+    } catch (e) { fail(res, e); }
+  });
+
+
+  /* ---------- Предварительный заезд: кого планируем, вахта ещё не назначена ---------- */
+  pdbPlans();
+  app.get("/api/shift-plans", (_req, res) => {
+    try {
+      const emps = storage.employees();
+      const objs = storage.objects();
+      const shifts = storage.shifts();
+      const rows = (planDb.prepare("SELECT * FROM shift_plans ORDER BY start_date, id").all() as any[]).map((p) => {
+        const e = emps.find((x: any) => x.id === p.employee_id);
+        const end = p.end_date || OPEN_END;
+        // пересечение с уже назначенной вахтой — подсказка, что план устарел или конфликтует
+        const clash = shifts.find((s: any) => s.employeeId === p.employee_id && s.startDate <= end && s.endDate >= p.start_date);
+        return {
+          id: p.id, employeeId: p.employee_id, fio: e?.fio ?? "сотрудник удалён", position: e?.position ?? "",
+          objectId: p.object_id, object: objs.find((o: any) => o.id === p.object_id)?.name ?? "не указан",
+          startDate: p.start_date, endDate: p.end_date, note: p.note, createdAt: p.created_at,
+          clash: clash ? `уже есть вахта ${clash.startDate.split("-").reverse().join(".")} — ${clash.endDate === OPEN_END ? "без даты выезда" : clash.endDate.split("-").reverse().join(".")}` : "",
+        };
+      });
+      res.json({ rows });
+    } catch (e) { fail(res, e); }
+  });
+  app.post("/api/shift-plans", (req, res) => {
+    try {
+      const ids: number[] = Array.isArray(req.body?.employeeIds) ? req.body.employeeIds.map(Number).filter(Boolean) : [];
+      const startDate = String(req.body?.startDate ?? "").slice(0, 10);
+      const endDate = req.body?.openEnd ? "" : String(req.body?.endDate ?? "").slice(0, 10);
+      const objectId = Number(req.body?.objectId) || 0;
+      if (!ids.length) throw new Error("Выберите сотрудников");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) throw new Error("Укажите планируемую дату заезда");
+      if (endDate && endDate < startDate) throw new Error("Дата выезда раньше даты заезда");
+      const ins = planDb.prepare("INSERT INTO shift_plans(employee_id, object_id, start_date, end_date, note, created_at) VALUES (?,?,?,?,?,?)");
+      for (const id of ids) ins.run(id, objectId, startDate, endDate, String(req.body?.note ?? "").slice(0, 300), new Date().toISOString());
+      audit(req, "Предварительный заезд", "shifts", `сотрудников ${ids.length}, заезд ${startDate}`);
+      res.json({ ok: true, created: ids.length });
+    } catch (e) { fail(res, e); }
+  });
+  app.patch("/api/shift-plans/:id", (req, res) => {
+    try {
+      const cur = planDb.prepare("SELECT * FROM shift_plans WHERE id=?").get(Number(req.params.id)) as any;
+      if (!cur) throw new Error("Запись не найдена");
+      const b = req.body ?? {};
+      const start = b.startDate !== undefined ? String(b.startDate).slice(0, 10) : cur.start_date;
+      const end = b.openEnd ? "" : b.endDate !== undefined ? String(b.endDate).slice(0, 10) : cur.end_date;
+      if (end && end < start) throw new Error("Дата выезда раньше даты заезда");
+      planDb.prepare("UPDATE shift_plans SET start_date=?, end_date=?, object_id=?, note=? WHERE id=?").run(
+        start, end, b.objectId !== undefined ? Number(b.objectId) || 0 : cur.object_id,
+        b.note !== undefined ? String(b.note).slice(0, 300) : cur.note, cur.id);
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+  app.delete("/api/shift-plans/:id", (req, res) => {
+    try { planDb.prepare("DELETE FROM shift_plans WHERE id=?").run(Number(req.params.id)); res.json({ ok: true }); }
+    catch (e) { fail(res, e); }
+  });
+  /** Перевести план в настоящую вахту: одну запись или несколько */
+  app.post("/api/shift-plans/assign", (req, res) => {
+    try {
+      const ids: number[] = Array.isArray(req.body?.ids) ? req.body.ids.map(Number) : [];
+      if (!ids.length) throw new Error("Не выбраны записи");
+      let created = 0;
+      for (const pid of ids) {
+        const p = planDb.prepare("SELECT * FROM shift_plans WHERE id=?").get(pid) as any;
+        if (!p) continue;
+        created += assignShiftsCore([p.employee_id], p.start_date, p.end_date || OPEN_END, p.object_id);
+        planDb.prepare("DELETE FROM shift_plans WHERE id=?").run(pid);
+      }
+      audit(req, "Вахта из предварительного заезда", "shifts", `назначено ${created}`);
+      res.json({ ok: true, created });
     } catch (e) { fail(res, e); }
   });
 
@@ -862,9 +954,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (!dateRe.test(v)) throw new Error("Укажите фактическую дату заезда");
         patch.startDate = v;
       }
-      if (req.body?.endDate !== undefined) {
+      if (req.body?.openEnd) {
+        patch.endDate = OPEN_END;
+      } else if (req.body?.endDate !== undefined) {
         const v = String(req.body.endDate).slice(0, 10);
-        if (!dateRe.test(v)) throw new Error("Укажите фактическую дату выезда");
+        if (!dateRe.test(v)) throw new Error("Укажите фактическую дату выезда или отметьте «не определена»");
         patch.endDate = v;
       }
       const start = patch.startDate ?? current.startDate;
@@ -1401,14 +1495,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         .filter((s: any) => (!from || s.endDate >= from) && (!to || s.startDate <= to))
         .map((s: any) => {
           const e = emps.find((x: any) => x.id === s.employeeId);
+          // без даты выезда дни считаем по сегодня
+          const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Krasnoyarsk" });
+          const end = s.endDate === OPEN_END ? (today < s.startDate ? s.startDate : today) : s.endDate;
           const days = Math.round(
-            (new Date(s.endDate + "T00:00:00Z").getTime() - new Date(s.startDate + "T00:00:00Z").getTime()) / 86400000,
+            (new Date(end + "T00:00:00Z").getTime() - new Date(s.startDate + "T00:00:00Z").getTime()) / 86400000,
           ) + 1;
           return {
             shiftId: s.id, employeeId: s.employeeId,
             fio: e?.fio ?? "сотрудник удалён", position: e?.position ?? "",
             objectId: s.objectId, object: objs.find((o: any) => o.id === s.objectId)?.name ?? "не указан",
             startDate: s.startDate, endDate: s.endDate, cycleType: s.cycleType, days,
+            openEnd: s.endDate === OPEN_END,
           };
         })
         .sort((a: any, b: any) => b.startDate.localeCompare(a.startDate) || a.fio.localeCompare(b.fio, "ru"));
@@ -1896,13 +1994,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ];
       for (const sh of rows) {
         const e = emps.find((x: any) => x.id === sh.employeeId);
+        const openEnd = sh.endDate === OPEN_END;
+        const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Krasnoyarsk" });
+        const endForDays = openEnd ? (today < sh.startDate ? sh.startDate : today) : sh.endDate;
         const days = Math.round(
-          (new Date(sh.endDate + "T00:00:00Z").getTime() - new Date(sh.startDate + "T00:00:00Z").getTime()) / 86400000,
+          (new Date(endForDays + "T00:00:00Z").getTime() - new Date(sh.startDate + "T00:00:00Z").getTime()) / 86400000,
         ) + 1;
         ws.addRow({
           fio: e?.fio ?? "", pos: e?.position ?? "",
           obj: objs.find((o: any) => o.id === sh.objectId)?.name ?? "",
-          start: sh.startDate, end: sh.endDate, days, cycle: sh.cycleType,
+          start: sh.startDate, end: openEnd ? "не определена" : sh.endDate, days, cycle: sh.cycleType,
         });
       }
       ws.getRow(1).font = { bold: true };
@@ -1920,9 +2021,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ws2.addRow({
           name: o.name, shifts: list.length,
           people: new Set(list.map((sh: any) => sh.employeeId)).size,
-          manDays: list.reduce((sum: number, sh: any) => sum + (Math.round(
-            (new Date(sh.endDate + "T00:00:00Z").getTime() - new Date(sh.startDate + "T00:00:00Z").getTime()) / 86400000,
-          ) + 1), 0),
+          manDays: list.reduce((sum: number, sh: any) => {
+            const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Krasnoyarsk" });
+            const end = sh.endDate === OPEN_END ? (today < sh.startDate ? sh.startDate : today) : sh.endDate;
+            return sum + Math.round((new Date(end + "T00:00:00Z").getTime() - new Date(sh.startDate + "T00:00:00Z").getTime()) / 86400000) + 1;
+          }, 0),
         });
       }
       ws2.getRow(1).font = { bold: true };

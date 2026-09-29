@@ -164,7 +164,7 @@ export async function sendMax(chatId: string, text: string, shiftId = 0, withBut
 }
 
 /** Дата в привычном виде: 2026-09-24 → 24.09.2026 */
-const ruDate = (s: string) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)}` : "");
+const ruDate = (s: string) => (s === "9999-12-31" ? "не определена" : s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)}` : "");
 
 /** Варианты ответа события: для подтверждения — стандартные две кнопки */
 export function eventOptions(ev: any): { text: string; verdict: "yes" | "no" | "choice" }[] {
