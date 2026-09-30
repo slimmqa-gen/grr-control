@@ -133,7 +133,8 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/shift-plans"] }); toast({ title: "Удалено из плана" }); },
   });
   const assign = useMutation({
-    mutationFn: async (ids: number[]) => (await apiRequest("POST", "/api/shift-plans/assign", { ids })).json(),
+    mutationFn: async (v: number[] | { objectId: number }) =>
+      (await apiRequest("POST", "/api/shift-plans/assign", Array.isArray(v) ? { ids: v } : v)).json(),
     onSuccess: (d: any) => {
       queryClient.invalidateQueries();
       setPicked([]);
@@ -243,7 +244,18 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
           <div className="space-y-4" data-testid="list-plans">
             {byObject.map(([obj, list]) => (
               <div key={obj}>
-                <div className="mb-1 text-sm font-semibold">{obj} <span className="font-normal text-muted-foreground">· {list.length} чел.</span></div>
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold">{obj} <span className="font-normal text-muted-foreground">· {list.length} чел.</span></span>
+                  <Button size="sm" className="ml-auto h-7" disabled={assign.isPending}
+                    onClick={() => {
+                      if (confirm(`Подтвердить всех на участке «${obj}» (${list.length} чел.)? Каждому будет назначена вахта по плану.`)) {
+                        assign.mutate({ objectId: list[0].objectId });
+                      }
+                    }}
+                    data-testid={`button-plan-confirm-object-${list[0].objectId}`}>
+                    <Check className="mr-1 h-3.5 w-3.5" />Подтвердить всех на участке ({list.length})
+                  </Button>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>

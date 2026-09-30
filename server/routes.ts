@@ -135,6 +135,9 @@ export function vehicleList() {
   }));
 }
 /** Водитель ли: машину показываем водителям, станок — остальным */
+/** Мост к подтверждению планов из бота MAX */
+export const planHooks: { confirm: ((ids: number[]) => number) | null } = { confirm: null };
+
 export const isDriver = (position: string) => /водит|шофер|шофёр|машинист/i.test(String(position ?? ""));
 
 const normPos = (p: string) => String(p ?? "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
@@ -170,7 +173,7 @@ function suggestReplacement(p: any, emps: any[], shifts: any[], taken: Set<numbe
 }
 
 /** Планы с подставленной заменой, станком и подсказками */
-function planRows() {
+export function planRows() {
   const emps = storage.employees() as any[];
   const objs = storage.objects() as any[];
   const rigs = storage.rigs() as any[];
@@ -864,9 +867,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ws.columns = [
         { header: "Участок", key: "o", width: 24 }, { header: "Сотрудник", key: "f", width: 28 },
         { header: "Должность", key: "p", width: 22 }, { header: "Станок / машина", key: "r", width: 24 },
-        { header: "Заезд (план)", key: "s", width: 14 }, { header: "Выезд (план)", key: "e", width: 14 },
+        { header: "Заезд (план)", key: "s", width: 14 },
         { header: "Кого меняет", key: "x", width: 28 }, { header: "Выезд сменяемого", key: "xu", width: 18 },
-        { header: "Как определено", key: "xa", width: 16 }, { header: "Примечание", key: "n", width: 32 },
+        { header: "Примечание", key: "n", width: 32 },
         { header: "Замечание", key: "c", width: 30 },
       ];
       const fmt = (d: string) => (d ? d.split("-").reverse().join(".") : "не определена");
@@ -1017,30 +1020,42 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /** Перевести план в настоящую вахту: одну запись или несколько */
+  /** Подтвердить планы: назначить вахты, сохранить станок, машину, замену. Нужна и боту MAX */
+  const confirmPlans = (ids: number[]) => {
+    let created = 0;
+    for (const pid of ids) {
+      const p = planDb.prepare("SELECT * FROM shift_plans WHERE id=?").get(pid) as any;
+      if (!p) continue;
+      const row = planRows().find((x) => x.id === pid);
+      const before = new Set(storage.shifts().map((x: any) => x.id));
+      created += assignShiftsCore([p.employee_id], p.start_date, p.end_date || OPEN_END, p.object_id);
+      const newShift = storage.shifts().find((x: any) => !before.has(x.id) && x.employeeId === p.employee_id);
+      if (newShift) {
+        planDb.prepare("INSERT OR REPLACE INTO shift_extra(shift_id, rig_id, vehicle_id, replaces_id, note) VALUES (?,?,?,?,?)")
+          .run(newShift.id, p.rig_id || 0, p.vehicle_id || 0, row?.replacesId || 0, p.note || "");
+      }
+      // у сменяемого отмечаем «замена назначена» на его текущей вахте
+      if (row?.replacesId) {
+        const cur = storage.shifts().filter((s: any) => s.employeeId === row.replacesId && s.startDate <= p.start_date)
+          .sort((a: any, b: any) => b.startDate.localeCompare(a.startDate))[0];
+        if (cur) storage.updateShift(cur.id, { replacementAssigned: 1 });
+      }
+      planDb.prepare("DELETE FROM shift_plans WHERE id=?").run(pid);
+    }
+    return created;
+  };
+  planHooks.confirm = confirmPlans;
+
   app.post("/api/shift-plans/assign", (req, res) => {
     try {
-      const ids: number[] = Array.isArray(req.body?.ids) ? req.body.ids.map(Number) : [];
-      if (!ids.length) throw new Error("Не выбраны записи");
-      let created = 0;
-      for (const pid of ids) {
-        const p = planDb.prepare("SELECT * FROM shift_plans WHERE id=?").get(pid) as any;
-        if (!p) continue;
-        const row = planRows().find((x) => x.id === pid);
-        const before = new Set(storage.shifts().map((x: any) => x.id));
-        created += assignShiftsCore([p.employee_id], p.start_date, p.end_date || OPEN_END, p.object_id);
-        const newShift = storage.shifts().find((x: any) => !before.has(x.id) && x.employeeId === p.employee_id);
-        if (newShift) {
-          planDb.prepare("INSERT OR REPLACE INTO shift_extra(shift_id, rig_id, vehicle_id, replaces_id, note) VALUES (?,?,?,?,?)")
-            .run(newShift.id, p.rig_id || 0, p.vehicle_id || 0, row?.replacesId || 0, p.note || "");
-        }
-        // у сменяемого отмечаем «замена назначена» на его текущей вахте
-        if (row?.replacesId) {
-          const cur = storage.shifts().filter((s: any) => s.employeeId === row.replacesId && s.startDate <= p.start_date)
-            .sort((a: any, b: any) => b.startDate.localeCompare(a.startDate))[0];
-          if (cur) storage.updateShift(cur.id, { replacementAssigned: 1 });
-        }
-        planDb.prepare("DELETE FROM shift_plans WHERE id=?").run(pid);
+      let ids: number[] = Array.isArray(req.body?.ids) ? req.body.ids.map(Number) : [];
+      // «подтвердить всех на участке»
+      if (req.body?.objectId !== undefined) {
+        const oid = Number(req.body.objectId) || 0;
+        ids = (planDb.prepare("SELECT id FROM shift_plans WHERE object_id=?").all(oid) as any[]).map((x) => x.id);
       }
+      if (!ids.length) throw new Error("Не выбраны записи");
+      const created = confirmPlans(ids);
       audit(req, "Вахта из предварительного заезда", "shifts", `назначено ${created}`);
       res.json({ ok: true, created });
     } catch (e) { fail(res, e); }

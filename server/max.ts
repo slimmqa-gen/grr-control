@@ -509,7 +509,7 @@ export async function handleMaxUpdate(u: any): Promise<{ linked: number; replies
         } catch { /* не критично */ }
       }
       const { handleMenu } = await import("./maxmenu");
-      try { await handleMenu(chatId, String(shiftRaw ?? "")); } catch (e) {
+      try { await handleMenu(chatId, callbackPayload.slice(2)); } catch (e) {
         await sendMax(chatId, `Не получилось: ${String((e as Error)?.message ?? e)}`);
       }
       return { linked, replies };

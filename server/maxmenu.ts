@@ -148,6 +148,35 @@ export function masterObjectId(employeeId: number): number {
   return Number((storage.employees() as any[]).find((e) => e.id === employeeId)?.objectId) || 0;
 }
 
+/* ---------------------- предварительный заезд ---------------------- */
+
+async function planList(objectIds: number[] | null) {
+  const { planRows } = await import("./routes");
+  return planRows().filter((p: any) => !objectIds || objectIds.includes(p.objectId));
+}
+
+/** План по участкам: кто, когда, станок или машина, кого меняет */
+export function planText(plans: any[], short = false): string {
+  const out: string[] = [`🗓 <b>Предварительный заезд</b>${plans.length ? ` — ${plans.length} чел.` : ""}`,
+    "<i>Это план, вахта ещё не назначена.</i>"];
+  if (!plans.length) { out.push("", "В плане никого нет."); return out.join("\n"); }
+  const byObj = new Map<string, any[]>();
+  for (const p of plans) {
+    if (!byObj.has(p.object)) byObj.set(p.object, []);
+    byObj.get(p.object)!.push(p);
+  }
+  for (const [obj, list] of byObj) {
+    out.push("━━━━━━━━━━━━━━", `<b>${esc(String(obj).toUpperCase())}</b> · ${list.length} чел.`);
+    for (const p of list) {
+      const tech = [p.rig, p.vehicle].filter(Boolean).join(", ");
+      out.push(`• <b>${esc(short ? p.fio : p.fio)}</b>${p.position ? `, ${esc(p.position)}` : ""} — заезд <b>${dm(p.startDate)}</b>`);
+      const extra = [tech ? `🛠 ${esc(tech)}` : "", p.replacesFio ? `меняет ${esc(p.replacesFio)}` : "никого не меняет"].filter(Boolean);
+      out.push(`   ${extra.join(" · ")}`);
+    }
+  }
+  return out.join("\n");
+}
+
 /* ---------------------------- кнопки ---------------------------- */
 
 type Btn = { text: string; payload: string };
@@ -160,13 +189,13 @@ export function menuRows(role: MaxRole, chatId: string): Btn[][] {
         [b("📍 Кто где", "crew"), b("📊 Сводка", "summary")],
         [b("🚐 Заезды", "callout"), b("🔄 Смена вахт", "rotation")],
         [b("📨 Вызовы", "callouts"), b("📋 События", "events")],
-        [b("👷 Люди", "people")],
+        [b("🗓 Предв. заезд", "plan"), b("👷 Люди", "people")],
       ];
     case "responsible":
       return [
         [b("📍 Кто где", "crew"), b("📊 Сводка", "summary")],
         [b("🚐 Заезды", "callout"), b("📨 Вызовы", "callouts")],
-        [b("📋 События", "events")],
+        [b("📋 События", "events"), b("🗓 Предв. заезд", "plan")],
       ];
     case "master": {
       const rows: Btn[][] = [];
@@ -174,6 +203,7 @@ export function menuRows(role: MaxRole, chatId: string): Btn[][] {
         ? [b("📊 Сводка", "summary"), b("🔄 Смена вахт", "rotation")]
         : [b("🔄 Смена вахт", "rotation")]);
       rows.push([b("🗓 Мой заезд", "myshift"), b("✉️ Написать сообщение", "write")]);
+      rows.push([b("🔜 Предв. заезд на участок", "plan")]);
       return rows;
     }
     case "employee":
@@ -202,6 +232,24 @@ export async function sendMainMenu(chatId: string, text?: string) {
 export async function handleMenu(chatId: string, cmd: string): Promise<void> {
   const role = roleOf(chatId);
   const rows = menuRows(role, chatId);
+  // подтверждение плана из бота — только директору
+  if (cmd.startsWith("pc:") || cmd.startsWith("pcy:")) {
+    if (role !== "director") { await sendMainMenu(chatId, "Подтверждать план может только директор."); return; }
+    const oid = Number(cmd.split(":")[1]) || 0;
+    const plans = await planList([oid]);
+    if (!plans.length) { await sendMaxMenu(chatId, "На этом участке в плане никого нет.", rows, "html"); return; }
+    const place = esc(plans[0].object);
+    if (cmd.startsWith("pc:")) {
+      await sendMaxMenu(chatId,
+        `Подтвердить всех: <b>${place}</b> — ${plans.length} чел.?\nКаждому будет назначена вахта по плану. Вызов отправляется отдельно.`,
+        [[{ text: `✅ Да, подтвердить (${plans.length})`, payload: `m:pcy:${oid}` }], [{ text: "Отмена", payload: "m:plan" }]], "html");
+      return;
+    }
+    const { planHooks } = await import("./routes");
+    const n = planHooks.confirm ? planHooks.confirm(plans.map((p) => p.id)) : 0;
+    await sendMaxMenu(chatId, `✅ <b>${place}</b>: подтверждено, назначено вахт — ${n}.\nВызовы — кнопкой «📨 Вызовы».`, rows, "html");
+    return;
+  }
   const allowed = rows.flat().some((x) => x.payload === `m:${cmd}`);
   if (!allowed) {
     const why = cmd === "summary" && role === "master"
@@ -219,6 +267,24 @@ export async function handleMenu(chatId: string, cmd: string): Promise<void> {
       const { sendCalloutReminder } = await import("./sms");
       const out = await sendCalloutReminder([chatId]);
       if (!out.rows) await sendMaxMenu(chatId, "✅ Все вызовы на ближайшие дни уже отправлены.", rows, "html");
+      return;
+    }
+    case "plan": {
+      const ids = role === "master" ? [masterObjectId(empId)].filter(Boolean) : null;
+      if (role === "master" && !ids?.length) { await sendMaxMenu(chatId, "Ваш участок не определён.", rows, "html"); return; }
+      const plans = await planList(ids);
+      const text = planText(plans, role === "master");
+      // директору — кнопки «Подтвердить» по каждому участку
+      const btns: Btn[][] = [];
+      if (role === "director") {
+        const byObj = new Map<number, { name: string; n: number }>();
+        for (const p of plans) {
+          const o = byObj.get(p.objectId) ?? { name: p.object, n: 0 };
+          o.n++; byObj.set(p.objectId, o);
+        }
+        for (const [oid, o] of byObj) btns.push([{ text: `✅ Подтвердить: ${o.name} (${o.n})`.slice(0, 60), payload: `m:pc:${oid}` }]);
+      }
+      await sendMaxMenu(chatId, text, [...btns, ...rows], "html");
       return;
     }
     case "write":
