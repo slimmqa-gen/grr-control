@@ -116,7 +116,26 @@ function pdbPlans() {
   if (!cols.includes("rig_id")) planDb.exec("ALTER TABLE shift_plans ADD COLUMN rig_id INTEGER NOT NULL DEFAULT 0");
   if (!cols.includes("replaces_id")) planDb.exec("ALTER TABLE shift_plans ADD COLUMN replaces_id INTEGER NOT NULL DEFAULT 0");
   if (!cols.includes("replaces_set")) planDb.exec("ALTER TABLE shift_plans ADD COLUMN replaces_set INTEGER NOT NULL DEFAULT 0");
+  if (!cols.includes("vehicle_id")) planDb.exec("ALTER TABLE shift_plans ADD COLUMN vehicle_id INTEGER NOT NULL DEFAULT 0");
+  // автомобили: марка, госномер, назначение (водовозка, бензовоз…), участок
+  planDb.exec(`CREATE TABLE IF NOT EXISTS vehicles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, brand TEXT NOT NULL DEFAULT '', plate TEXT NOT NULL DEFAULT '',
+    purpose TEXT NOT NULL DEFAULT '', object_id INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'в работе',
+    note TEXT NOT NULL DEFAULT '')`);
+  // что закрепили при подтверждении плана: станок, машина, кого меняет, примечание
+  planDb.exec(`CREATE TABLE IF NOT EXISTS shift_extra (
+    shift_id INTEGER PRIMARY KEY, rig_id INTEGER NOT NULL DEFAULT 0, vehicle_id INTEGER NOT NULL DEFAULT 0,
+    replaces_id INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '')`);
 }
+
+export function vehicleList() {
+  return (planDb.prepare("SELECT * FROM vehicles ORDER BY brand, plate").all() as any[]).map((v) => ({
+    id: v.id, brand: v.brand, plate: v.plate, purpose: v.purpose, objectId: v.object_id, status: v.status, note: v.note,
+    name: [v.brand, v.plate].filter(Boolean).join(" · ") + (v.purpose ? ` (${v.purpose})` : ""),
+  }));
+}
+/** Водитель ли: машину показываем водителям, станок — остальным */
+export const isDriver = (position: string) => /водит|шофер|шофёр|машинист/i.test(String(position ?? ""));
 
 const normPos = (p: string) => String(p ?? "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
 const dayDiff = (a: string, b: string) =>
@@ -155,6 +174,7 @@ function planRows() {
   const emps = storage.employees() as any[];
   const objs = storage.objects() as any[];
   const rigs = storage.rigs() as any[];
+  const vehicles = vehicleList();
   const shifts = storage.shifts() as any[];
   const raw = planDb.prepare("SELECT * FROM shift_plans ORDER BY start_date, id").all() as any[];
   const taken = new Set<number>(raw.filter((p) => p.replaces_set && p.replaces_id).map((p) => p.replaces_id));
@@ -176,6 +196,8 @@ function planRows() {
       id: p.id, employeeId: p.employee_id, fio: e?.fio ?? "сотрудник удалён", position: e?.position ?? "",
       objectId: p.object_id, object: objs.find((o) => o.id === p.object_id)?.name ?? "не указан",
       rigId: p.rig_id, rig: rigs.find((x) => x.id === p.rig_id)?.name ?? "",
+      vehicleId: p.vehicle_id, vehicle: vehicles.find((x) => x.id === p.vehicle_id)?.name ?? "",
+      driver: isDriver(e?.position ?? ""),
       startDate: p.start_date, endDate: p.end_date, note: p.note, createdAt: p.created_at,
       replacesId, replacesAuto: auto, replacesFio: r?.fio ?? "",
       replacesUntil: rShift ? (rShift.endDate === OPEN_END ? "выезд не определён" : `выезд ${fmt(rShift.endDate)}`) : "",
@@ -401,6 +423,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       dataTypes: DATA_TYPES, importFields: IMPORT_FIELDS,
       labs: storage.labs(), analysisTypes: storage.analysisTypes(),
       equipment: storage.equipment(),
+      vehicles: vehicleList(),
       sampleStages: SAMPLE_STAGES, sampleTypes: SAMPLE_TYPES, rejectReasons: REJECT_REASONS,
       shipMethods: SHIP_METHODS, elements: SAMPLE_ELEMENTS, assayUnits: ASSAY_UNITS,
       cutTypes: CUT_TYPES, coreLogStatuses: CORE_LOG_STATUSES, cutStatuses: CUT_STATUSES,
@@ -446,6 +469,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       positions: storage.positions(),
       labs: storage.labs(),
       analysisTypes: storage.analysisTypes(),
+      vehicles: vehicleList(),
       rigStatuses: RIG_STATUSES,
       equipmentKinds: EQUIPMENT_KINDS,
       assayUnits: ASSAY_UNITS,
@@ -839,7 +863,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const ws = wb.addWorksheet("Предварительный заезд");
       ws.columns = [
         { header: "Участок", key: "o", width: 24 }, { header: "Сотрудник", key: "f", width: 28 },
-        { header: "Должность", key: "p", width: 22 }, { header: "Станок", key: "r", width: 16 },
+        { header: "Должность", key: "p", width: 22 }, { header: "Станок / машина", key: "r", width: 24 },
         { header: "Заезд (план)", key: "s", width: 14 }, { header: "Выезд (план)", key: "e", width: 14 },
         { header: "Кого меняет", key: "x", width: 28 }, { header: "Выезд сменяемого", key: "xu", width: 18 },
         { header: "Как определено", key: "xa", width: 16 }, { header: "Примечание", key: "n", width: 32 },
@@ -848,7 +872,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const fmt = (d: string) => (d ? d.split("-").reverse().join(".") : "не определена");
       for (const r of planRows()) {
         ws.addRow({
-          o: r.object, f: r.fio, p: r.position, r: r.rig || "—", s: fmt(r.startDate), e: fmt(r.endDate),
+          o: r.object, f: r.fio, p: r.position, r: [r.rig, r.vehicle].filter(Boolean).join(", ") || "—", s: fmt(r.startDate), e: fmt(r.endDate),
           x: r.replacesFio || "никого не меняет", xu: r.replacesUntil, xa: r.replacesAuto ? "автоматически" : "вручную",
           n: r.note, c: r.clash,
         });
@@ -868,7 +892,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) throw new Error("Укажите планируемую дату заезда");
       if (endDate && endDate < startDate) throw new Error("Дата выезда раньше даты заезда");
       const ins = planDb.prepare("INSERT INTO shift_plans(employee_id, object_id, start_date, end_date, note, created_at, rig_id) VALUES (?,?,?,?,?,?,?)");
-      for (const id of ids) ins.run(id, objectId, startDate, endDate, String(req.body?.note ?? "").slice(0, 300), new Date().toISOString(), Number(req.body?.rigId) || 0);
+      for (const id of ids) {
+        const info = ins.run(id, objectId, startDate, endDate, String(req.body?.note ?? "").slice(0, 300), new Date().toISOString(), Number(req.body?.rigId) || 0);
+        if (req.body?.vehicleId) planDb.prepare("UPDATE shift_plans SET vehicle_id=? WHERE id=?").run(Number(req.body.vehicleId) || 0, info.lastInsertRowid);
+      }
       audit(req, "Предварительный заезд", "shifts", `сотрудников ${ids.length}, заезд ${startDate}`);
       res.json({ ok: true, created: ids.length });
     } catch (e) { fail(res, e); }
@@ -890,6 +917,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         start, end, b.objectId !== undefined ? Number(b.objectId) || 0 : cur.object_id,
         b.note !== undefined ? String(b.note).slice(0, 300) : cur.note,
         b.rigId !== undefined ? Number(b.rigId) || 0 : cur.rig_id, repId, repSet, cur.id);
+      if (b.vehicleId !== undefined) planDb.prepare("UPDATE shift_plans SET vehicle_id=? WHERE id=?").run(Number(b.vehicleId) || 0, cur.id);
       res.json({ ok: true });
     } catch (e) { fail(res, e); }
   });
@@ -897,6 +925,97 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try { planDb.prepare("DELETE FROM shift_plans WHERE id=?").run(Number(req.params.id)); res.json({ ok: true }); }
     catch (e) { fail(res, e); }
   });
+  /** Назначенные вахты по участкам — идущие и будущие, как выгрузка плана */
+  app.get("/api/shifts/xlsx-by-object", async (_req, res) => {
+    try {
+      const ExcelJS = (await import("exceljs")).default;
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Krasnoyarsk" });
+      const emps = storage.employees() as any[];
+      const objs = storage.objects() as any[];
+      const rigs = storage.rigs() as any[];
+      const vehicles = vehicleList();
+      const shifts = storage.shifts() as any[];
+      const extra = new Map((planDb.prepare("SELECT * FROM shift_extra").all() as any[]).map((x) => [x.shift_id, x]));
+      const fmt = (d: string) => (d && d !== OPEN_END ? d.split("-").reverse().join(".") : "");
+      const rows = shifts.filter((s) => s.endDate >= today).map((s) => {
+        const e = emps.find((x) => x.id === s.employeeId);
+        const x = extra.get(s.id);
+        // кого меняет: из подтверждённого плана, иначе подбор по должности и участку
+        const taken = new Set<number>();
+        const repId = x?.replaces_id ?? suggestReplacement(
+          { employee_id: s.employeeId, object_id: s.objectId, start_date: s.startDate },
+          emps, shifts.filter((z) => z.id !== s.id), taken);
+        const r = emps.find((z) => z.id === repId);
+        const rShift = repId ? shifts.filter((z) => z.employeeId === repId && z.startDate <= s.startDate && z.id !== s.id)
+          .sort((a, b) => b.startDate.localeCompare(a.startDate))[0] : null;
+        return {
+          o: objs.find((z) => z.id === s.objectId)?.name ?? "не назначен на участок",
+          f: e?.fio ?? "сотрудник удалён", p: e?.position ?? "",
+          r: [rigs.find((z) => z.id === x?.rig_id)?.name, vehicles.find((z) => z.id === x?.vehicle_id)?.name].filter(Boolean).join(", ") || "—",
+          s: fmt(s.startDate), sd: s.startDate,
+          x: r?.fio ?? "никого не меняет",
+          xu: rShift ? (rShift.endDate === OPEN_END ? "выезд не определён" : `выезд ${fmt(rShift.endDate)}`) : "",
+          n: x?.note ?? "",
+          st: s.startDate > today ? "заезд впереди" : "на вахте",
+        };
+      }).sort((a, b) => a.o.localeCompare(b.o, "ru") || a.sd.localeCompare(b.sd) || a.f.localeCompare(b.f, "ru"));
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Назначенные вахты");
+      ws.columns = [
+        { header: "Участок", key: "o", width: 24 }, { header: "Сотрудник", key: "f", width: 28 },
+        { header: "Должность", key: "p", width: 22 }, { header: "Станок / машина", key: "r", width: 24 },
+        { header: "Заезд", key: "s", width: 12 }, { header: "Состояние", key: "st", width: 14 },
+        { header: "Кого меняет", key: "x", width: 28 }, { header: "Выезд сменяемого", key: "xu", width: 18 },
+        { header: "Примечание", key: "n", width: 32 },
+      ];
+      let last = "";
+      for (const r of rows) {
+        if (r.o !== last) {
+          const g = ws.addRow({ o: `${r.o} — ${rows.filter((z) => z.o === r.o).length} чел.` });
+          g.font = { bold: true };
+          g.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8EEF5" } };
+          last = r.o;
+        }
+        ws.addRow(r);
+      }
+      ws.getRow(1).font = { bold: true };
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+      await sendWorkbook(res, wb, `Назначенные вахты ${new Date().toLocaleDateString("ru-RU", { timeZone: "Asia/Krasnoyarsk" })}.xlsx`);
+    } catch (e) { fail(res, e, 500); }
+  });
+
+  /* ---------- Справочник: автомобили ---------- */
+  const vehBody = (b: any) => ({
+    brand: String(b?.brand ?? "").trim(), plate: String(b?.plate ?? "").trim().toUpperCase(),
+    purpose: String(b?.purpose ?? "").trim(), object_id: Number(b?.objectId) || 0,
+    status: String(b?.status ?? "в работе") || "в работе", note: String(b?.note ?? "").trim(),
+  });
+  app.get("/api/ref/vehicles", (_req, res) => { try { res.json(vehicleList()); } catch (e) { fail(res, e); } });
+  app.post("/api/ref/vehicles", (req, res) => {
+    try {
+      const v = vehBody(req.body);
+      if (!v.brand && !v.plate) throw new Error("Укажите марку или госномер");
+      const info = planDb.prepare("INSERT INTO vehicles(brand, plate, purpose, object_id, status, note) VALUES (?,?,?,?,?,?)")
+        .run(v.brand, v.plate, v.purpose, v.object_id, v.status, v.note);
+      res.json({ id: info.lastInsertRowid });
+    } catch (e) { fail(res, e); }
+  });
+  app.patch("/api/ref/vehicles/:id", (req, res) => {
+    try {
+      const v = vehBody(req.body);
+      planDb.prepare("UPDATE vehicles SET brand=?, plate=?, purpose=?, object_id=?, status=?, note=? WHERE id=?")
+        .run(v.brand, v.plate, v.purpose, v.object_id, v.status, v.note, Number(req.params.id));
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+  app.delete("/api/ref/vehicles/:id", (req, res) => {
+    try {
+      planDb.prepare("DELETE FROM vehicles WHERE id=?").run(Number(req.params.id));
+      planDb.prepare("UPDATE shift_plans SET vehicle_id=0 WHERE vehicle_id=?").run(Number(req.params.id));
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+
   /** Перевести план в настоящую вахту: одну запись или несколько */
   app.post("/api/shift-plans/assign", (req, res) => {
     try {
@@ -907,7 +1026,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const p = planDb.prepare("SELECT * FROM shift_plans WHERE id=?").get(pid) as any;
         if (!p) continue;
         const row = planRows().find((x) => x.id === pid);
+        const before = new Set(storage.shifts().map((x: any) => x.id));
         created += assignShiftsCore([p.employee_id], p.start_date, p.end_date || OPEN_END, p.object_id);
+        const newShift = storage.shifts().find((x: any) => !before.has(x.id) && x.employeeId === p.employee_id);
+        if (newShift) {
+          planDb.prepare("INSERT OR REPLACE INTO shift_extra(shift_id, rig_id, vehicle_id, replaces_id, note) VALUES (?,?,?,?,?)")
+            .run(newShift.id, p.rig_id || 0, p.vehicle_id || 0, row?.replacesId || 0, p.note || "");
+        }
         // у сменяемого отмечаем «замена назначена» на его текущей вахте
         if (row?.replacesId) {
           const cur = storage.shifts().filter((s: any) => s.employeeId === row.replacesId && s.startDate <= p.start_date)

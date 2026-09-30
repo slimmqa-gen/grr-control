@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { employeeStateOn } from "@shared/status";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet, Link2, Copy, RefreshCw, Settings, MessagesSquare, ClipboardList, ListChecks } from "lucide-react";
+import { Plus, Check, Trash2, Pencil, CalendarPlus, Search, Users, CalendarRange, Plane, HeartPulse, Briefcase, GraduationCap, BarChart3, Stethoscope, History, CalendarDays, RotateCcw, MessageSquare, Send, Wallet, Link2, Copy, RefreshCw, Settings, MessagesSquare, ClipboardList, ListChecks, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -1946,7 +1946,12 @@ export default function Crew() {
             </Button>
           </Card>
 
-          <Section className="mb-4" title="Вахты" description="Даты заезда и выезда можно изменить в любой момент — кнопка с карандашом">
+          <Section className="mb-4" title="Вахты" description="Даты заезда и выезда можно изменить в любой момент — кнопка с карандашом"
+            actions={(
+              <Button size="sm" variant="outline" onClick={() => downloadFile("/api/shifts/xlsx-by-object", "Назначенные вахты.xlsx")} data-testid="button-shifts-by-object-xlsx">
+                <Download className="mr-2 h-4 w-4" />Назначенные вахты по участкам в Excel
+              </Button>
+            )}>
             {allShifts.length === 0 ? (
               <div className="rounded-md border border-dashed p-6 text-center" data-testid="empty-shifts">
                 <div className="text-sm font-medium">Вахты ещё не назначены</div>

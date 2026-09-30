@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { Plus, Pencil, Trash2, Wand2, Building2, Drill, Users, Truck, Wallet, Package, FlaskConical, TestTubes } from "lucide-react";
+import { Plus, Pencil, Trash2, Wand2, Building2, Drill, Users, Truck, Wallet, Package, FlaskConical, TestTubes, Car } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -25,15 +25,18 @@ type Field = {
   options?: { value: string; label: string }[];
   hint?: string;
   wide?: boolean;
+  /** подсказки для текстового поля: можно выбрать из списка или вписать своё */
+  suggest?: string[];
 };
 
 type TabKey =
-  | "objects" | "rigs" | "positions" | "equipment" | "costItems" | "inventoryItems"
+  | "objects" | "rigs" | "vehicles" | "positions" | "equipment" | "costItems" | "inventoryItems"
   | "labs" | "analysisTypes";
 
 const TABS: { key: TabKey; label: string; icon: any }[] = [
   { key: "objects", label: "Объекты", icon: Building2 },
   { key: "rigs", label: "Буровые станки", icon: Drill },
+  { key: "vehicles", label: "Автомобили", icon: Car },
   { key: "positions", label: "Должности", icon: Users },
   { key: "equipment", label: "Техника для ГСМ", icon: Truck },
   { key: "costItems", label: "Статьи затрат", icon: Wallet },
@@ -45,6 +48,7 @@ const TABS: { key: TabKey; label: string; icon: any }[] = [
 const ENDPOINT: Record<TabKey, string> = {
   objects: "/api/ref/objects",
   rigs: "/api/ref/rigs",
+  vehicles: "/api/ref/vehicles",
   positions: "/api/ref/positions",
   equipment: "/api/ref/equipment",
   costItems: "/api/ref/cost-items",
@@ -56,6 +60,7 @@ const ENDPOINT: Record<TabKey, string> = {
 const TITLE_ONE: Record<TabKey, string> = {
   objects: "объект",
   rigs: "станок",
+  vehicles: "автомобиль",
   positions: "должность",
   equipment: "технику",
   costItems: "статью затрат",
@@ -68,6 +73,7 @@ const DESCRIPTION: Record<TabKey, string> = {
   objects:
     "Объект (участок) — основа всех расчётов: план по метрам, выручка по договору и себестоимость считаются по нему.",
   rigs: "Станки нужны, чтобы считать метры на смену и видеть, кто из техники простаивает.",
+  vehicles: "Автомобили с госномером и назначением. Водителя закрепляют за машиной и участком в «Предварительном заезде».",
   positions: "Должности подставляются в карточке сотрудника и при загрузке штата из Excel.",
   equipment: "Техника с нормой расхода топлива — по ней считается перерасход ГСМ.",
   costItems: "Статьи затрат используются при загрузке фактических затрат по объектам.",
@@ -117,6 +123,21 @@ export default function ReferencesPage() {
         key: "status", label: "Статус", kind: "select",
         options: (data?.rigStatuses ?? ["в работе", "ремонт", "резерв"]).map((s: string) => ({ value: s, label: s })),
       },
+    ],
+    vehicles: [
+      { key: "brand", label: "Марка, модель", hint: "например: КАМАЗ 43118, УАЗ 390995" },
+      { key: "plate", label: "Госномер", hint: "например: А123ВС 124" },
+      {
+        key: "purpose", label: "Назначение", hint: "Для чего машина: выберите из списка или впишите своё",
+        suggest: ["Водовозка", "Бензовоз (топливозаправщик)", "Вахтовка (вахтовый автобус)", "Бортовой грузовой", "Самосвал",
+          "Автокран", "Манипулятор (КМУ)", "Трал (перевозка станков)", "Легковой / УАЗ", "Вездеход", "Передвижная мастерская"],
+      },
+      { key: "objectId", label: "Участок", kind: "select", options: rigObjectOptions },
+      {
+        key: "status", label: "Статус", kind: "select",
+        options: ["в работе", "ремонт", "резерв"].map((x) => ({ value: x, label: x })),
+      },
+      { key: "note", label: "Примечание", wide: true, hint: "Любые заметки: объём цистерны, пропуск, страховка до…" },
     ],
     positions: [{ key: "name", label: "Название должности", wide: true }],
     equipment: [
@@ -398,13 +419,21 @@ export default function ReferencesPage() {
                     </SelectContent>
                   </Select>
                 ) : (
-                  <Input
-                    type={f.kind === "date" ? "date" : "text"}
-                    inputMode={f.kind === "number" ? "decimal" : undefined}
-                    value={form[f.key] ?? ""}
-                    onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
-                    data-testid={`input-${tab}-${f.key}`}
-                  />
+                  <>
+                    <Input
+                      type={f.kind === "date" ? "date" : "text"}
+                      inputMode={f.kind === "number" ? "decimal" : undefined}
+                      value={form[f.key] ?? ""}
+                      onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                      list={f.suggest ? `dl-${tab}-${f.key}` : undefined}
+                      data-testid={`input-${tab}-${f.key}`}
+                    />
+                    {f.suggest && (
+                      <datalist id={`dl-${tab}-${f.key}`}>
+                        {f.suggest.map((x) => <option key={x} value={x} />)}
+                      </datalist>
+                    )}
+                  </>
                 )}
                 {f.hint && <p className="mt-1 text-xs text-muted-foreground">{f.hint}</p>}
               </div>

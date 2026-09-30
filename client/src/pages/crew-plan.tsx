@@ -67,13 +67,15 @@ function StateBadge({ a }: { a?: { state: EmployeeState; note: string } }) {
   return <Badge variant="outline" className={`text-[11px] ${st.cls}`}>{st.label}{a.note ? ` · ${a.note}` : ""}</Badge>;
 }
 
-type Form = { id: number; employeeIds: number[]; objectId: number; rigId: number; startDate: string; endDate: string; openEnd: boolean; note: string };
-const EMPTY: Form = { id: 0, employeeIds: [], objectId: 0, rigId: 0, startDate: todayIso(), endDate: "", openEnd: false, note: "" };
+type Form = { id: number; employeeIds: number[]; objectId: number; rigId: number; vehicleId: number; startDate: string; endDate: string; openEnd: boolean; note: string };
+const EMPTY: Form = { id: 0, employeeIds: [], objectId: 0, rigId: 0, vehicleId: 0, startDate: todayIso(), endDate: "", openEnd: false, note: "" };
+const isDriver = (p: string) => /водит|шофер|шофёр|машинист/i.test(String(p ?? ""));
 
 export function PlanTab({ employees, objects }: { employees: any[]; objects: any[] }) {
   const { toast } = useToast();
   const refQ = useQuery<any>({ queryKey: ["/api/reference"] });
   const rigs: any[] = refQ.data?.rigs ?? [];
+  const vehicles: any[] = refQ.data?.vehicles ?? [];
   // поиск свободных: на какую дату, какая должность, какой статус
   const [availDay, setAvailDay] = useState(todayIso());
   const [availPos, setAvailPos] = useState("");
@@ -115,7 +117,7 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
 
   const save = useMutation({
     mutationFn: async (f: Form) => {
-      const body = { employeeIds: f.employeeIds, objectId: f.objectId, rigId: f.rigId, startDate: f.startDate, endDate: f.endDate, openEnd: f.openEnd, note: f.note };
+      const body = { employeeIds: f.employeeIds, objectId: f.objectId, rigId: f.rigId, vehicleId: f.vehicleId, startDate: f.startDate, endDate: f.endDate, openEnd: f.openEnd, note: f.note };
       return (await (f.id ? apiRequest("PATCH", `/api/shift-plans/${f.id}`, body) : apiRequest("POST", "/api/shift-plans", body))).json();
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/shift-plans"] }); setOpen(false); toast({ title: "План сохранён" }); },
@@ -135,7 +137,7 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
     onSuccess: (d: any) => {
       queryClient.invalidateQueries();
       setPicked([]);
-      toast({ title: `Вахта назначена: ${d.created}`, description: "Записи перенесены в «Вахты». Вызов отправляется отдельно — кнопкой." });
+      toast({ title: `Подтверждено, вахта назначена: ${d.created}`, description: "Записи перенесены в «Вахты» со станком, машиной и заменой. Вызов отправляется отдельно — кнопкой." });
     },
     onError: (e: any) => toast({ title: "Не назначено", description: String(e?.message ?? e), variant: "destructive" }),
   });
@@ -149,7 +151,7 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
   const [dlgGroup, setDlgGroup] = useState<"all" | "free">("free");
   const edit = (r: any) => {
     setErr("");
-    setForm({ id: r.id, employeeIds: [r.employeeId], objectId: r.objectId, rigId: r.rigId || 0, startDate: r.startDate, endDate: r.endDate, openEnd: !r.endDate, note: r.note ?? "" });
+    setForm({ id: r.id, employeeIds: [r.employeeId], objectId: r.objectId, rigId: r.rigId || 0, vehicleId: r.vehicleId || 0, startDate: r.startDate, endDate: r.endDate, openEnd: !r.endDate, note: r.note ?? "" });
     setOpen(true);
   };
   const empList = employees.filter((e) => (!q || String(e.fio).toLowerCase().includes(q.toLowerCase()))
@@ -159,16 +161,19 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
     <>
       <Section
         title="Предварительный заезд"
-        description="Кого и куда планируем. Это ещё не вахта: на статусы, вызовы, табели и бота MAX план не влияет. Когда решение принято — «Назначить вахту»."
+        description="Кого и куда планируем. Это ещё не вахта: на статусы, вызовы, табели и бота MAX план не влияет. Когда решение принято — «Подтвердить»: вахта назначится сама."
         actions={(
           <div className="flex flex-wrap gap-2">
             {picked.length > 0 && (
               <Button size="sm" onClick={() => assign.mutate(picked)} disabled={assign.isPending} data-testid="button-plan-assign-picked">
-                <Check className="mr-2 h-4 w-4" />Назначить вахту выбранным ({picked.length})
+                <Check className="mr-2 h-4 w-4" />Подтвердить выбранных ({picked.length})
               </Button>
             )}
             <Button size="sm" variant="outline" onClick={() => downloadFile("/api/shift-plans/xlsx", "Предварительный заезд.xlsx")} data-testid="button-plan-xlsx">
-              <Download className="mr-2 h-4 w-4" />Выгрузить в Excel
+              <Download className="mr-2 h-4 w-4" />План в Excel
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => downloadFile("/api/shifts/xlsx-by-object", "Назначенные вахты.xlsx")} data-testid="button-shifts-xlsx">
+              <Download className="mr-2 h-4 w-4" />Назначенные вахты в Excel
             </Button>
             <Button size="sm" variant="outline" onClick={() => startNew()} data-testid="button-plan-add">
               <CalendarPlus className="mr-2 h-4 w-4" />Запланировать
@@ -247,7 +252,7 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
                         <th className="py-1.5 pr-3 font-medium">Сотрудник</th>
                         <th className="py-1.5 pr-3 font-medium">Заезд (план)</th>
                         <th className="py-1.5 pr-3 font-medium">Выезд (план)</th>
-                        <th className="py-1.5 pr-3 font-medium">Станок</th>
+                        <th className="py-1.5 pr-3 font-medium">Станок / машина</th>
                         <th className="py-1.5 pr-3 font-medium">Кого меняет</th>
                         <th className="py-1.5 pr-3 font-medium">Примечание</th>
                         <th className="py-1.5" />
@@ -268,14 +273,25 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
                           <td className="num py-1.5 pr-3 whitespace-nowrap">{ruDate(r.startDate)}</td>
                           <td className="num py-1.5 pr-3 whitespace-nowrap">{r.endDate ? ruDate(r.endDate) : <span className="text-muted-foreground">не определена</span>}</td>
                           <td className="py-1.5 pr-3">
-                            <select className="h-8 max-w-[140px] rounded-md border bg-background px-1 text-sm" value={r.rigId || 0}
-                              onChange={(e) => patchPlan.mutate({ id: r.id, body: { rigId: Number(e.target.value) } })}
-                              data-testid={`select-plan-rig-${r.id}`}>
-                              <option value={0}>—</option>
-                              {rigs.filter((x) => !r.objectId || !x.objectId || x.objectId === r.objectId || x.id === r.rigId).map((x) => (
-                                <option key={x.id} value={x.id}>{x.name}{x.model ? ` (${x.model})` : ""}</option>
-                              ))}
-                            </select>
+                            {r.driver ? (
+                              <select className="h-8 max-w-[190px] rounded-md border bg-background px-1 text-sm" value={r.vehicleId || 0}
+                                onChange={(e) => patchPlan.mutate({ id: r.id, body: { vehicleId: Number(e.target.value) } })}
+                                data-testid={`select-plan-vehicle-${r.id}`}>
+                                <option value={0}>машина —</option>
+                                {vehicles.filter((x) => !r.objectId || !x.objectId || x.objectId === r.objectId || x.id === r.vehicleId).map((x) => (
+                                  <option key={x.id} value={x.id}>{x.name}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <select className="h-8 max-w-[140px] rounded-md border bg-background px-1 text-sm" value={r.rigId || 0}
+                                onChange={(e) => patchPlan.mutate({ id: r.id, body: { rigId: Number(e.target.value) } })}
+                                data-testid={`select-plan-rig-${r.id}`}>
+                                <option value={0}>станок —</option>
+                                {rigs.filter((x) => !r.objectId || !x.objectId || x.objectId === r.objectId || x.id === r.rigId).map((x) => (
+                                  <option key={x.id} value={x.id}>{x.name}{x.model ? ` (${x.model})` : ""}</option>
+                                ))}
+                              </select>
+                            )}
                           </td>
                           <td className="py-1.5 pr-3">
                             <select className="h-8 max-w-[210px] rounded-md border bg-background px-1 text-sm"
@@ -297,7 +313,7 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
                           <td className="py-1.5 text-right whitespace-nowrap">
                             <Button size="sm" variant="outline" className="mr-1 h-7" onClick={() => assign.mutate([r.id])} disabled={assign.isPending}
                               data-testid={`button-plan-assign-${r.id}`}>
-                              <Check className="mr-1 h-3.5 w-3.5" />Назначить вахту
+                              <Check className="mr-1 h-3.5 w-3.5" />Подтвердить
                             </Button>
                             <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => edit(r)} aria-label="Изменить"><Pencil className="h-4 w-4" /></Button>
                             <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => { if (confirm(`Убрать ${r.fio} из плана?`)) del.mutate(r.id); }} aria-label="Удалить">
@@ -321,7 +337,7 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
             <DialogTitle>{form.id ? "Изменить план" : "Запланировать заезд"}</DialogTitle>
             <DialogDescription>План не создаёт вахту и ничего не отправляет сотрудникам.</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3 sm:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-3">
             <div>
               <label className="mb-1 block text-xs font-medium">Участок</label>
               <select className="h-9 w-full rounded-md border bg-background px-2 text-sm" value={form.objectId}
@@ -337,6 +353,16 @@ export function PlanTab({ employees, objects }: { employees: any[]; objects: any
                 <option value={0}>не указан</option>
                 {rigs.filter((x) => !form.objectId || !x.objectId || x.objectId === form.objectId).map((x) => (
                   <option key={x.id} value={x.id}>{x.name}{x.model ? ` (${x.model})` : ""}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium">Машина (для водителей)</label>
+              <select className="h-9 w-full rounded-md border bg-background px-2 text-sm" value={form.vehicleId}
+                onChange={(e) => setForm({ ...form, vehicleId: Number(e.target.value) })} data-testid="select-plan-vehicle">
+                <option value={0}>не указана</option>
+                {vehicles.filter((x) => !form.objectId || !x.objectId || x.objectId === form.objectId).map((x) => (
+                  <option key={x.id} value={x.id}>{x.name}</option>
                 ))}
               </select>
             </div>
