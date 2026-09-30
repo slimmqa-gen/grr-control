@@ -1375,7 +1375,7 @@ export default function Crew() {
                       key={e.id}
                       testId={`dash-row-med-${e.id}`}
                       fio={e.fio}
-                      sub={`${e.position || "должность не указана"} · ${objName(e.objectId) || "объект не указан"}`}
+                      sub={`${e.position || "должность не указана"} · ${objName(e.objectId) || "не назначен на участок"}`}
                       badge={e.med.text}
                       level={e.med.level}
                       onOpen={() => openEmployeeCard(e.id)}
@@ -1528,7 +1528,7 @@ export default function Crew() {
                   <SelectTrigger data-testid="filter-crew-object"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">Все объекты</SelectItem>
-                    <SelectItem value={NO_OBJECT}>Объект не указан</SelectItem>
+                    <SelectItem value={NO_OBJECT}>Не назначен на участок</SelectItem>
                     {objects.map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -1657,7 +1657,7 @@ export default function Crew() {
                         </td>
                         <td className="py-2 pr-3 font-medium">{e.fio}</td>
                         <td className="py-2 pr-3 text-muted-foreground">{e.position}</td>
-                        <td className="py-2 pr-3 text-muted-foreground">{objName(e.objectId) || "не указан"}</td>
+                        <td className="py-2 pr-3 text-muted-foreground">{objName(e.objectId) || <span className="italic">не назначен на участок</span>}</td>
                         <td className="num py-2 pr-3 whitespace-nowrap text-muted-foreground">{e.phone || "—"}</td>
                         <td className="py-2 pr-3">
                           <Select
@@ -4180,7 +4180,7 @@ export default function Crew() {
                 <Select value={empForm.objectId} onValueChange={(v) => setEmpForm({ ...empForm, objectId: v })}>
                   <SelectTrigger data-testid="select-emp-object"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={NO_OBJECT}>Не указан</SelectItem>
+                    <SelectItem value={NO_OBJECT}>Не назначен на участок</SelectItem>
                     {objects.map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -4441,7 +4441,7 @@ export default function Crew() {
             <Select value={bulkValue} onValueChange={setBulkValue}>
               <SelectTrigger data-testid="select-bulk-object"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value={NO_OBJECT}>Не указан</SelectItem>
+                <SelectItem value={NO_OBJECT}>Не назначен на участок</SelectItem>
                 {objects.map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.name}</SelectItem>)}
               </SelectContent>
             </Select>

@@ -111,6 +111,77 @@ function pdbPlans() {
   planDb.exec(`CREATE TABLE IF NOT EXISTS shift_plans (
     id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, object_id INTEGER NOT NULL DEFAULT 0,
     start_date TEXT NOT NULL, end_date TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '')`);
+  const cols = (planDb.prepare("PRAGMA table_info(shift_plans)").all() as any[]).map((c) => c.name);
+  // станок и кого меняет: replaces_set=1 — выбрано вручную (replaces_id=0 — никого не меняет)
+  if (!cols.includes("rig_id")) planDb.exec("ALTER TABLE shift_plans ADD COLUMN rig_id INTEGER NOT NULL DEFAULT 0");
+  if (!cols.includes("replaces_id")) planDb.exec("ALTER TABLE shift_plans ADD COLUMN replaces_id INTEGER NOT NULL DEFAULT 0");
+  if (!cols.includes("replaces_set")) planDb.exec("ALTER TABLE shift_plans ADD COLUMN replaces_set INTEGER NOT NULL DEFAULT 0");
+}
+
+const normPos = (p: string) => String(p ?? "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
+const dayDiff = (a: string, b: string) =>
+  Math.round((new Date(a + "T00:00:00Z").getTime() - new Date(b + "T00:00:00Z").getTime()) / 86400000);
+
+/**
+ * Кого меняет человек из плана: та же должность, тот же участок,
+ * его вахта заканчивается рядом с планируемым заездом (±10 дней)
+ * или идёт без даты выезда. Уже занятых другим планом не берём.
+ */
+function suggestReplacement(p: any, emps: any[], shifts: any[], taken: Set<number>): number {
+  const me = emps.find((e) => e.id === p.employee_id);
+  if (!me?.position) return 0;
+  const pos = normPos(me.position);
+  let best: { id: number; score: number } | null = null;
+  for (const sh of shifts) {
+    if (sh.employeeId === p.employee_id || taken.has(sh.employeeId)) continue;
+    if (p.object_id && sh.objectId !== p.object_id) continue;
+    const e = emps.find((x) => x.id === sh.employeeId);
+    if (!e || normPos(e.position) !== pos) continue;
+    if (sh.startDate > p.start_date) continue;                 // должен уже быть на вахте к заезду
+    let score: number;
+    if (sh.endDate === OPEN_END) score = 20;                    // без даты выезда — возможная замена
+    else {
+      const d = Math.abs(dayDiff(sh.endDate, p.start_date));
+      if (d > 10) continue;
+      score = d;
+    }
+    if (!best || score < best.score) best = { id: sh.employeeId, score };
+  }
+  return best?.id ?? 0;
+}
+
+/** Планы с подставленной заменой, станком и подсказками */
+function planRows() {
+  const emps = storage.employees() as any[];
+  const objs = storage.objects() as any[];
+  const rigs = storage.rigs() as any[];
+  const shifts = storage.shifts() as any[];
+  const raw = planDb.prepare("SELECT * FROM shift_plans ORDER BY start_date, id").all() as any[];
+  const taken = new Set<number>(raw.filter((p) => p.replaces_set && p.replaces_id).map((p) => p.replaces_id));
+  const fmt = (d: string) => d.split("-").reverse().join(".");
+  return raw.map((p) => {
+    const e = emps.find((x) => x.id === p.employee_id);
+    const end = p.end_date || OPEN_END;
+    const clash = shifts.find((s) => s.employeeId === p.employee_id && s.startDate <= end && s.endDate >= p.start_date);
+    let replacesId = p.replaces_id;
+    const auto = !p.replaces_set;
+    if (auto) {
+      replacesId = suggestReplacement(p, emps, shifts, taken);
+      if (replacesId) taken.add(replacesId);
+    }
+    const r = emps.find((x) => x.id === replacesId);
+    const rShift = replacesId ? shifts.filter((s) => s.employeeId === replacesId && s.startDate <= p.start_date)
+      .sort((a, b) => b.startDate.localeCompare(a.startDate))[0] : null;
+    return {
+      id: p.id, employeeId: p.employee_id, fio: e?.fio ?? "сотрудник удалён", position: e?.position ?? "",
+      objectId: p.object_id, object: objs.find((o) => o.id === p.object_id)?.name ?? "не указан",
+      rigId: p.rig_id, rig: rigs.find((x) => x.id === p.rig_id)?.name ?? "",
+      startDate: p.start_date, endDate: p.end_date, note: p.note, createdAt: p.created_at,
+      replacesId, replacesAuto: auto, replacesFio: r?.fio ?? "",
+      replacesUntil: rShift ? (rShift.endDate === OPEN_END ? "выезд не определён" : `выезд ${fmt(rShift.endDate)}`) : "",
+      clash: clash ? `уже есть вахта ${fmt(clash.startDate)} — ${clash.endDate === OPEN_END ? "без даты выезда" : fmt(clash.endDate)}` : "",
+    };
+  });
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -759,24 +830,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ---------- Предварительный заезд: кого планируем, вахта ещё не назначена ---------- */
   pdbPlans();
   app.get("/api/shift-plans", (_req, res) => {
+    try { res.json({ rows: planRows() }); } catch (e) { fail(res, e); }
+  });
+  app.get("/api/shift-plans/xlsx", async (_req, res) => {
     try {
-      const emps = storage.employees();
-      const objs = storage.objects();
-      const shifts = storage.shifts();
-      const rows = (planDb.prepare("SELECT * FROM shift_plans ORDER BY start_date, id").all() as any[]).map((p) => {
-        const e = emps.find((x: any) => x.id === p.employee_id);
-        const end = p.end_date || OPEN_END;
-        // пересечение с уже назначенной вахтой — подсказка, что план устарел или конфликтует
-        const clash = shifts.find((s: any) => s.employeeId === p.employee_id && s.startDate <= end && s.endDate >= p.start_date);
-        return {
-          id: p.id, employeeId: p.employee_id, fio: e?.fio ?? "сотрудник удалён", position: e?.position ?? "",
-          objectId: p.object_id, object: objs.find((o: any) => o.id === p.object_id)?.name ?? "не указан",
-          startDate: p.start_date, endDate: p.end_date, note: p.note, createdAt: p.created_at,
-          clash: clash ? `уже есть вахта ${clash.startDate.split("-").reverse().join(".")} — ${clash.endDate === OPEN_END ? "без даты выезда" : clash.endDate.split("-").reverse().join(".")}` : "",
-        };
-      });
-      res.json({ rows });
-    } catch (e) { fail(res, e); }
+      const ExcelJS = (await import("exceljs")).default;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Предварительный заезд");
+      ws.columns = [
+        { header: "Участок", key: "o", width: 24 }, { header: "Сотрудник", key: "f", width: 28 },
+        { header: "Должность", key: "p", width: 22 }, { header: "Станок", key: "r", width: 16 },
+        { header: "Заезд (план)", key: "s", width: 14 }, { header: "Выезд (план)", key: "e", width: 14 },
+        { header: "Кого меняет", key: "x", width: 28 }, { header: "Выезд сменяемого", key: "xu", width: 18 },
+        { header: "Как определено", key: "xa", width: 16 }, { header: "Примечание", key: "n", width: 32 },
+        { header: "Замечание", key: "c", width: 30 },
+      ];
+      const fmt = (d: string) => (d ? d.split("-").reverse().join(".") : "не определена");
+      for (const r of planRows()) {
+        ws.addRow({
+          o: r.object, f: r.fio, p: r.position, r: r.rig || "—", s: fmt(r.startDate), e: fmt(r.endDate),
+          x: r.replacesFio || "никого не меняет", xu: r.replacesUntil, xa: r.replacesAuto ? "автоматически" : "вручную",
+          n: r.note, c: r.clash,
+        });
+      }
+      ws.getRow(1).font = { bold: true };
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+      await sendWorkbook(res, wb, `Предварительный заезд ${new Date().toLocaleDateString("ru-RU", { timeZone: "Asia/Krasnoyarsk" })}.xlsx`);
+    } catch (e) { fail(res, e, 500); }
   });
   app.post("/api/shift-plans", (req, res) => {
     try {
@@ -787,8 +867,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!ids.length) throw new Error("Выберите сотрудников");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) throw new Error("Укажите планируемую дату заезда");
       if (endDate && endDate < startDate) throw new Error("Дата выезда раньше даты заезда");
-      const ins = planDb.prepare("INSERT INTO shift_plans(employee_id, object_id, start_date, end_date, note, created_at) VALUES (?,?,?,?,?,?)");
-      for (const id of ids) ins.run(id, objectId, startDate, endDate, String(req.body?.note ?? "").slice(0, 300), new Date().toISOString());
+      const ins = planDb.prepare("INSERT INTO shift_plans(employee_id, object_id, start_date, end_date, note, created_at, rig_id) VALUES (?,?,?,?,?,?,?)");
+      for (const id of ids) ins.run(id, objectId, startDate, endDate, String(req.body?.note ?? "").slice(0, 300), new Date().toISOString(), Number(req.body?.rigId) || 0);
       audit(req, "Предварительный заезд", "shifts", `сотрудников ${ids.length}, заезд ${startDate}`);
       res.json({ ok: true, created: ids.length });
     } catch (e) { fail(res, e); }
@@ -801,9 +881,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const start = b.startDate !== undefined ? String(b.startDate).slice(0, 10) : cur.start_date;
       const end = b.openEnd ? "" : b.endDate !== undefined ? String(b.endDate).slice(0, 10) : cur.end_date;
       if (end && end < start) throw new Error("Дата выезда раньше даты заезда");
-      planDb.prepare("UPDATE shift_plans SET start_date=?, end_date=?, object_id=?, note=? WHERE id=?").run(
+      // кого меняет: "auto" — подбирает программа, число — выбрано вручную (0 — никого)
+      let repId = cur.replaces_id, repSet = cur.replaces_set;
+      if (b.replaces !== undefined) {
+        if (b.replaces === "auto") { repId = 0; repSet = 0; } else { repId = Number(b.replaces) || 0; repSet = 1; }
+      }
+      planDb.prepare("UPDATE shift_plans SET start_date=?, end_date=?, object_id=?, note=?, rig_id=?, replaces_id=?, replaces_set=? WHERE id=?").run(
         start, end, b.objectId !== undefined ? Number(b.objectId) || 0 : cur.object_id,
-        b.note !== undefined ? String(b.note).slice(0, 300) : cur.note, cur.id);
+        b.note !== undefined ? String(b.note).slice(0, 300) : cur.note,
+        b.rigId !== undefined ? Number(b.rigId) || 0 : cur.rig_id, repId, repSet, cur.id);
       res.json({ ok: true });
     } catch (e) { fail(res, e); }
   });
@@ -820,7 +906,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       for (const pid of ids) {
         const p = planDb.prepare("SELECT * FROM shift_plans WHERE id=?").get(pid) as any;
         if (!p) continue;
+        const row = planRows().find((x) => x.id === pid);
         created += assignShiftsCore([p.employee_id], p.start_date, p.end_date || OPEN_END, p.object_id);
+        // у сменяемого отмечаем «замена назначена» на его текущей вахте
+        if (row?.replacesId) {
+          const cur = storage.shifts().filter((s: any) => s.employeeId === row.replacesId && s.startDate <= p.start_date)
+            .sort((a: any, b: any) => b.startDate.localeCompare(a.startDate))[0];
+          if (cur) storage.updateShift(cur.id, { replacementAssigned: 1 });
+        }
         planDb.prepare("DELETE FROM shift_plans WHERE id=?").run(pid);
       }
       audit(req, "Вахта из предварительного заезда", "shifts", `назначено ${created}`);

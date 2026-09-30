@@ -220,7 +220,8 @@ export function mirrorToWorkTables(): Record<string, number> {
   // из сводок. Сотрудники, вахты, объекты с планами, календарь и остальной
   // справочник ведутся в программе вручную — их трогать нельзя. Раньше здесь
   // стояла полная очистка, и каждая загрузка сводки стирала кадровый блок.
-  for (const t of ["reports", "core_logs", "core_cuts", "rigs", "brigades"]) {
+  // станки не пересоздаём: участок и статус станка ведутся в справочнике вручную
+  for (const t of ["reports", "core_logs", "core_cuts", "brigades"]) {
     try { pdb.prepare(`DELETE FROM ${t}`).run(); } catch { /* таблицы может не быть */ }
   }
 
@@ -260,9 +261,18 @@ export function mirrorToWorkTables(): Record<string, number> {
   // станки и бригады
   const rigIds: Record<string, number> = {};
   const rigPairs = Array.from(new Set(shifts.map((s) => `${s.object}||${s.rig || "БУ без марки"}`)));
+  const norm = (x: string) => String(x ?? "").toLowerCase().replace(/[\s-]+/g, "").trim();
+  const known = pdb.prepare(`SELECT id, name, object_id FROM rigs`).all() as any[];
   for (const p of rigPairs) {
     const [obj, rig] = p.split("||");
-    const row = db.insert(rigs).values({ name: rig, model: rig, objectId: objIds[obj] ?? 0, status: "в работе" }).returning().get() as any;
+    const oid = objIds[obj] ?? 0;
+    // тот же станок на том же участке → берём его; иначе единственный станок с таким
+    // названием (его могли перевести на другой участок в справочнике) → тоже его
+    const same = known.filter((k) => norm(k.name) === norm(rig));
+    const hit = same.find((k) => k.object_id === oid) ?? (same.length === 1 ? same[0] : null);
+    if (hit) { rigIds[p] = hit.id; continue; }
+    const row = db.insert(rigs).values({ name: rig, model: rig, objectId: oid, status: "в работе" }).returning().get() as any;
+    known.push({ id: row.id, name: rig, object_id: oid });
     rigIds[p] = row.id;
   }
   const brigIds: Record<string, number> = {};

@@ -91,6 +91,11 @@ export default function ReferencesPage() {
     () => (data?.objects ?? []).map((o: any) => ({ value: String(o.id), label: o.name })),
     [data],
   );
+  // станок может стоять без участка: в резерве, в ремонте, на базе
+  const rigObjectOptions = useMemo(
+    () => [...objectOptions, { value: "0", label: "Не назначен на участок" }],
+    [objectOptions],
+  );
 
   const FIELDS: Record<TabKey, Field[]> = {
     objects: [
@@ -107,7 +112,7 @@ export default function ReferencesPage() {
     rigs: [
       { key: "name", label: "Название / номер станка", wide: true },
       { key: "model", label: "Тип (модель)", wide: true },
-      { key: "objectId", label: "Объект, где работает", kind: "select", options: objectOptions },
+      { key: "objectId", label: "Участок, где работает", kind: "select", options: rigObjectOptions, hint: "Можно оставить «Не назначен на участок»" },
       {
         key: "status", label: "Статус", kind: "select",
         options: (data?.rigStatuses ?? ["в работе", "ремонт", "резерв"]).map((s: string) => ({ value: s, label: s })),
@@ -146,7 +151,7 @@ export default function ReferencesPage() {
     ],
   };
 
-  const objName = (id: number) => data?.objects?.find((o: any) => o.id === id)?.name ?? "—";
+  const objName = (id: number) => data?.objects?.find((o: any) => o.id === id)?.name ?? "не назначен на участок";
 
   const rows: any[] = data?.[tab] ?? [];
   const fields = FIELDS[tab];
