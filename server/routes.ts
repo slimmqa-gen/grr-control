@@ -122,6 +122,10 @@ function pdbPlans() {
     id INTEGER PRIMARY KEY AUTOINCREMENT, brand TEXT NOT NULL DEFAULT '', plate TEXT NOT NULL DEFAULT '',
     purpose TEXT NOT NULL DEFAULT '', object_id INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'в работе',
     note TEXT NOT NULL DEFAULT '')`);
+  // предварительный выезд: ручные записи; status=skip — авто-выезд убран вручную
+  planDb.exec(`CREATE TABLE IF NOT EXISTS exit_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, end_date TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'plan', created_at TEXT NOT NULL DEFAULT '')`);
   // что закрепили при подтверждении плана: станок, машина, кого меняет, примечание
   planDb.exec(`CREATE TABLE IF NOT EXISTS shift_extra (
     shift_id INTEGER PRIMARY KEY, rig_id INTEGER NOT NULL DEFAULT 0, vehicle_id INTEGER NOT NULL DEFAULT 0,
@@ -135,8 +139,61 @@ export function vehicleList() {
   }));
 }
 /** Водитель ли: машину показываем водителям, станок — остальным */
+/** Текущая (или ближайшая идущая) вахта человека, которую закрывает выезд */
+function openShiftOf(employeeId: number, shifts: any[], today: string) {
+  return shifts.filter((s) => s.employeeId === employeeId && s.endDate >= today && s.startDate <= (s.endDate === OPEN_END ? "9999-12-30" : s.endDate))
+    .sort((a, b) => a.startDate.localeCompare(b.startDate))[0] ?? null;
+}
+
+/**
+ * Предварительный выезд:
+ *  • авто — сменяемые из плана заезда: выезд в день заезда сменщика;
+ *  • вручную — записи из exit_plans (перекрывают авто для того же человека).
+ */
+export function exitRows() {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Krasnoyarsk" });
+  const emps = storage.employees() as any[];
+  const objs = storage.objects() as any[];
+  const shifts = storage.shifts() as any[];
+  const manual = planDb.prepare("SELECT * FROM exit_plans ORDER BY end_date, id").all() as any[];
+  const byEmp = new Map(manual.map((m) => [m.employee_id, m]));
+  const fmt = (d: string) => (d && d !== OPEN_END ? d.split("-").reverse().join(".") : "не определена");
+  const rows: any[] = [];
+  const add = (employeeId: number, endDate: string, source: "auto" | "manual", extra: any) => {
+    const e = emps.find((x) => x.id === employeeId);
+    const sh = openShiftOf(employeeId, shifts, today);
+    rows.push({
+      key: source === "manual" ? `m${extra.id}` : `a${extra.planId}`,
+      id: source === "manual" ? extra.id : 0, planId: extra.planId ?? 0,
+      employeeId, fio: e?.fio ?? "сотрудник удалён", position: e?.position ?? "",
+      objectId: sh?.objectId ?? e?.objectId ?? 0,
+      object: objs.find((o) => o.id === (sh?.objectId ?? e?.objectId))?.name ?? "не назначен на участок",
+      shiftId: sh?.id ?? 0, shiftStart: sh?.startDate ?? "", shiftEnd: sh?.endDate ?? "",
+      shiftEndText: sh ? fmt(sh.endDate) : "вахты нет",
+      endDate, source, note: extra.note ?? "",
+      replacedBy: extra.replacedBy ?? "",
+      warn: !sh ? "у человека нет идущей вахты" : endDate < sh.startDate ? "выезд раньше заезда" : "",
+    });
+  };
+  for (const m of manual) if (m.status !== "skip") add(m.employee_id, m.end_date, "manual", { id: m.id, note: m.note });
+  // авто: из плана заезда, если для человека нет ручной записи или отметки «убрать»
+  for (const p of planRows()) {
+    if (!p.replacesId) continue;
+    const m = byEmp.get(p.replacesId);
+    // ручная запись перекрывает авто; «убрано» — только для той же даты заезда сменщика
+    if (m && (m.status !== "skip" || m.end_date === p.startDate)) continue;
+    if (rows.some((r) => r.employeeId === p.replacesId)) continue;
+    add(p.replacesId, p.startDate, "auto", { planId: p.id, replacedBy: p.fio, note: "" });
+  }
+  // кого меняют ручные записи — тоже подскажем из плана заезда
+  for (const r of rows) {
+    if (!r.replacedBy) r.replacedBy = planRows().find((p) => p.replacesId === r.employeeId)?.fio ?? "";
+  }
+  return rows.sort((a, b) => a.object.localeCompare(b.object, "ru") || a.endDate.localeCompare(b.endDate));
+}
+
 /** Мост к подтверждению планов из бота MAX */
-export const planHooks: { confirm: ((ids: number[]) => number) | null } = { confirm: null };
+export const planHooks: { confirm: ((ids: number[]) => number) | null; confirmExits: ((keys: string[]) => number) | null } = { confirm: null, confirmExits: null };
 
 export const isDriver = (position: string) => /водит|шофер|шофёр|машинист/i.test(String(position ?? ""));
 
@@ -1059,6 +1116,110 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       audit(req, "Вахта из предварительного заезда", "shifts", `назначено ${created}`);
       res.json({ ok: true, created });
     } catch (e) { fail(res, e); }
+  });
+
+  /* ---------- Предварительный выезд ---------- */
+  app.get("/api/exit-plans", (_req, res) => {
+    try { res.json({ rows: exitRows() }); } catch (e) { fail(res, e); }
+  });
+  /** Вручную: несколько человек на одну дату, или правка/перенос авто-выезда */
+  app.post("/api/exit-plans", (req, res) => {
+    try {
+      const ids: number[] = Array.isArray(req.body?.employeeIds) ? req.body.employeeIds.map(Number).filter(Boolean) : [];
+      const endDate = String(req.body?.endDate ?? "").slice(0, 10);
+      if (!ids.length) throw new Error("Выберите сотрудников");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) throw new Error("Укажите дату выезда");
+      const note = String(req.body?.note ?? "").slice(0, 300);
+      for (const id of ids) {
+        planDb.prepare("DELETE FROM exit_plans WHERE employee_id=?").run(id);
+        planDb.prepare("INSERT INTO exit_plans(employee_id, end_date, note, status, created_at) VALUES (?,?,?,?,?)")
+          .run(id, endDate, note, "plan", new Date().toISOString());
+      }
+      audit(req, "Предварительный выезд", "shifts", `сотрудников ${ids.length}, выезд ${endDate}`);
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+  /** Убрать из плана выезда: ручную запись удаляем, авто — помечаем «не выезжает» */
+  app.post("/api/exit-plans/remove", (req, res) => {
+    try {
+      const key = String(req.body?.key ?? "");
+      const row = exitRows().find((r) => r.key === key);
+      if (!row) throw new Error("Запись не найдена");
+      planDb.prepare("DELETE FROM exit_plans WHERE employee_id=?").run(row.employeeId);
+      if (row.source === "auto") {
+        planDb.prepare("INSERT INTO exit_plans(employee_id, end_date, note, status, created_at) VALUES (?,?,?,?,?)")
+          .run(row.employeeId, row.endDate, "", "skip", new Date().toISOString());
+      }
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+  /** Вернуть авто-выезд, если его убирали */
+  app.post("/api/exit-plans/reset", (req, res) => {
+    try { planDb.prepare("DELETE FROM exit_plans WHERE employee_id=?").run(Number(req.body?.employeeId) || 0); res.json({ ok: true }); }
+    catch (e) { fail(res, e); }
+  });
+
+  /** Подтвердить выезд: ставим дату выезда в его вахту */
+  const confirmExits = (keys: string[]) => {
+    let done = 0;
+    for (const key of keys) {
+      const r = exitRows().find((x) => x.key === key);
+      if (!r || !r.shiftId) continue;
+      const cur = storage.shifts().find((s: any) => s.id === r.shiftId);
+      if (!cur || r.endDate < cur.startDate) continue;
+      const patch = { endDate: r.endDate, cycleType: shiftCycle(cur.startDate, r.endDate) };
+      storage.updateShift(cur.id, patch);
+      void import("./maxmenu").then((m) => m.notifyShiftChange(cur, { ...cur, ...patch }));
+      planDb.prepare("DELETE FROM exit_plans WHERE employee_id=?").run(r.employeeId);
+      if (r.source === "auto") {
+        // авто-выезд подтверждён — больше не подставляем
+        planDb.prepare("INSERT INTO exit_plans(employee_id, end_date, note, status, created_at) VALUES (?,?,?,?,?)")
+          .run(r.employeeId, r.endDate, "", "skip", new Date().toISOString());
+      }
+      done++;
+    }
+    return done;
+  };
+  planHooks.confirmExits = confirmExits;
+  app.post("/api/exit-plans/confirm", (req, res) => {
+    try {
+      let keys: string[] = Array.isArray(req.body?.keys) ? req.body.keys.map(String) : [];
+      if (req.body?.objectId !== undefined) keys = exitRows().filter((r) => r.objectId === Number(req.body.objectId)).map((r) => r.key);
+      if (!keys.length) throw new Error("Не выбраны записи");
+      const done = confirmExits(keys);
+      audit(req, "Подтверждён выезд", "shifts", `выездов ${done}`);
+      res.json({ ok: true, done });
+    } catch (e) { fail(res, e); }
+  });
+  app.get("/api/exit-plans/xlsx", async (_req, res) => {
+    try {
+      const ExcelJS = (await import("exceljs")).default;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Предварительный выезд");
+      ws.columns = [
+        { header: "Участок", key: "o", width: 24 }, { header: "Сотрудник", key: "f", width: 28 },
+        { header: "Должность", key: "p", width: 22 }, { header: "На вахте с", key: "s", width: 12 },
+        { header: "Выезд по графику", key: "g", width: 16 }, { header: "Выезд (план)", key: "e", width: 14 },
+        { header: "Кто меняет", key: "r", width: 28 }, { header: "Примечание", key: "n", width: 30 },
+        { header: "Замечание", key: "w", width: 26 },
+      ];
+      const fmt = (d: string) => (d ? d.split("-").reverse().join(".") : "");
+      let last = "";
+      const rows = exitRows();
+      for (const r of rows) {
+        if (r.object !== last) {
+          const g = ws.addRow({ o: `${r.object} — ${rows.filter((z) => z.object === r.object).length} чел.` });
+          g.font = { bold: true };
+          g.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8EEF5" } };
+          last = r.object;
+        }
+        ws.addRow({ o: r.object, f: r.fio, p: r.position, s: fmt(r.shiftStart), g: r.shiftEndText, e: fmt(r.endDate),
+          r: r.replacedBy || "—", n: r.note, w: r.warn });
+      }
+      ws.getRow(1).font = { bold: true };
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+      await sendWorkbook(res, wb, `Предварительный выезд ${new Date().toLocaleDateString("ru-RU", { timeZone: "Asia/Krasnoyarsk" })}.xlsx`);
+    } catch (e) { fail(res, e, 500); }
   });
 
   /** Массовое изменение объекта или должности */

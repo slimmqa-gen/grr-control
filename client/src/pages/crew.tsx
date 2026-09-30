@@ -23,6 +23,7 @@ import { nf, ruDate, todayIso, downloadFile, levelBadge, levelText, type Level }
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { PlanTab } from "./crew-plan";
+import { ExitTab } from "./crew-exit";
 
 const NO_OBJECT = "0";
 
@@ -157,6 +158,7 @@ export default function Crew() {
   const empEventsQ = useList<any>("/api/employee-events");
   const { toast } = useToast();
 
+  const [planMode, setPlanMode] = useState<"in" | "out">("in");
   const [tab, setTab] = useState<
     "dash" | "people" | "shifts" | "plan" | "absence" | "arch" | "cal" | "sms" | "chat" | "events" | "setup"
   >("dash");
@@ -1154,7 +1156,7 @@ export default function Crew() {
           data-testid="tab-plan"
         >
           <CalendarPlus className="mr-2 h-4 w-4" />
-          Предварительный заезд
+          Предварительный заезд и выезд
         </Button>
         <Button
           size="sm"
@@ -2079,7 +2081,19 @@ export default function Crew() {
       )}
 
 
-      {tab === "plan" && <PlanTab employees={emps} objects={objects} />}
+      {tab === "plan" && (
+        <>
+          <div className="mb-3 flex gap-2" data-testid="plan-mode">
+            <Button size="sm" variant={planMode === "in" ? "default" : "outline"} onClick={() => setPlanMode("in")} data-testid="button-plan-mode-in">
+              Заезд
+            </Button>
+            <Button size="sm" variant={planMode === "out" ? "default" : "outline"} onClick={() => setPlanMode("out")} data-testid="button-plan-mode-out">
+              Выезд
+            </Button>
+          </div>
+          {planMode === "in" ? <PlanTab employees={emps} objects={objects} /> : <ExitTab employees={emps} objects={objects} />}
+        </>
+      )}
 
       {tab === "arch" && (
         <>

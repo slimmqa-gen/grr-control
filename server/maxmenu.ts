@@ -155,6 +155,27 @@ async function planList(objectIds: number[] | null) {
   return planRows().filter((p: any) => !objectIds || objectIds.includes(p.objectId));
 }
 
+async function exitList(objectIds: number[] | null) {
+  const { exitRows } = await import("./routes");
+  return exitRows().filter((x: any) => !objectIds || objectIds.includes(x.objectId));
+}
+
+/** Предварительный выезд по участкам */
+export function exitText(list: any[]): string {
+  const out: string[] = [`🚪 <b>Предварительный выезд</b>${list.length ? ` — ${list.length} чел.` : ""}`];
+  if (!list.length) { out.push("В плане никого нет."); return out.join("\n"); }
+  const byObj = new Map<string, any[]>();
+  for (const x of list) { if (!byObj.has(x.object)) byObj.set(x.object, []); byObj.get(x.object)!.push(x); }
+  for (const [obj, l] of byObj) {
+    out.push("━━━━━━━━━━━━━━", `<b>${esc(String(obj).toUpperCase())}</b> · ${l.length} чел.`);
+    for (const x of l) {
+      out.push(`• <b>${esc(x.fio)}</b>${x.position ? `, ${esc(x.position)}` : ""} — выезд <b>${dm(x.endDate)}</b>`);
+      out.push(`   ${x.replacedBy ? `сменщик: ${esc(x.replacedBy)}` : "без сменщика"}${x.source === "auto" ? " · по плану заезда" : ""}`);
+    }
+  }
+  return out.join("\n");
+}
+
 /** План по участкам: кто, когда, станок или машина, кого меняет */
 export function planText(plans: any[], short = false): string {
   const out: string[] = [`🗓 <b>Предварительный заезд</b>${plans.length ? ` — ${plans.length} чел.` : ""}`,
@@ -189,13 +210,13 @@ export function menuRows(role: MaxRole, chatId: string): Btn[][] {
         [b("📍 Кто где", "crew"), b("📊 Сводка", "summary")],
         [b("🚐 Заезды", "callout"), b("🔄 Смена вахт", "rotation")],
         [b("📨 Вызовы", "callouts"), b("📋 События", "events")],
-        [b("🗓 Предв. заезд", "plan"), b("👷 Люди", "people")],
+        [b("🗓 Предв. заезд и выезд", "plan"), b("👷 Люди", "people")],
       ];
     case "responsible":
       return [
         [b("📍 Кто где", "crew"), b("📊 Сводка", "summary")],
         [b("🚐 Заезды", "callout"), b("📨 Вызовы", "callouts")],
-        [b("📋 События", "events"), b("🗓 Предв. заезд", "plan")],
+        [b("📋 События", "events"), b("🗓 Предв. заезд и выезд", "plan")],
       ];
     case "master": {
       const rows: Btn[][] = [];
@@ -203,7 +224,7 @@ export function menuRows(role: MaxRole, chatId: string): Btn[][] {
         ? [b("📊 Сводка", "summary"), b("🔄 Смена вахт", "rotation")]
         : [b("🔄 Смена вахт", "rotation")]);
       rows.push([b("🗓 Мой заезд", "myshift"), b("✉️ Написать сообщение", "write")]);
-      rows.push([b("🔜 Предв. заезд на участок", "plan")]);
+      rows.push([b("🔜 Заезд и выезд на участке", "plan")]);
       return rows;
     }
     case "employee":
@@ -232,6 +253,23 @@ export async function sendMainMenu(chatId: string, text?: string) {
 export async function handleMenu(chatId: string, cmd: string): Promise<void> {
   const role = roleOf(chatId);
   const rows = menuRows(role, chatId);
+  // подтверждение выезда по участку — только директору
+  if (cmd.startsWith("ec:") || cmd.startsWith("ecy:")) {
+    if (role !== "director") { await sendMainMenu(chatId, "Подтверждать выезд может только директор."); return; }
+    const oid = Number(cmd.split(":")[1]) || 0;
+    const exits = (await exitList([oid])).filter((x: any) => x.shiftId);
+    if (!exits.length) { await sendMaxMenu(chatId, "На этом участке выездов в плане нет.", rows, "html"); return; }
+    const place = esc(exits[0].object);
+    if (cmd.startsWith("ec:")) {
+      await sendMaxMenu(chatId, `Подтвердить выезд: <b>${place}</b> — ${exits.length} чел.?\nДата выезда встанет в их вахты.`,
+        [[{ text: `✅ Да, подтвердить (${exits.length})`, payload: `m:ecy:${oid}` }], [{ text: "Отмена", payload: "m:plan" }]], "html");
+      return;
+    }
+    const { planHooks } = await import("./routes");
+    const n = planHooks.confirmExits ? planHooks.confirmExits(exits.map((x: any) => x.key)) : 0;
+    await sendMaxMenu(chatId, `✅ <b>${place}</b>: выезд подтверждён — ${n} чел.`, rows, "html");
+    return;
+  }
   // подтверждение плана из бота — только директору
   if (cmd.startsWith("pc:") || cmd.startsWith("pcy:")) {
     if (role !== "director") { await sendMainMenu(chatId, "Подтверждать план может только директор."); return; }
@@ -273,7 +311,8 @@ export async function handleMenu(chatId: string, cmd: string): Promise<void> {
       const ids = role === "master" ? [masterObjectId(empId)].filter(Boolean) : null;
       if (role === "master" && !ids?.length) { await sendMaxMenu(chatId, "Ваш участок не определён.", rows, "html"); return; }
       const plans = await planList(ids);
-      const text = planText(plans, role === "master");
+      const exits = await exitList(ids);
+      const text = planText(plans, role === "master") + "\n\n" + exitText(exits);
       // директору — кнопки «Подтвердить» по каждому участку
       const btns: Btn[][] = [];
       if (role === "director") {
@@ -282,7 +321,13 @@ export async function handleMenu(chatId: string, cmd: string): Promise<void> {
           const o = byObj.get(p.objectId) ?? { name: p.object, n: 0 };
           o.n++; byObj.set(p.objectId, o);
         }
-        for (const [oid, o] of byObj) btns.push([{ text: `✅ Подтвердить: ${o.name} (${o.n})`.slice(0, 60), payload: `m:pc:${oid}` }]);
+        for (const [oid, o] of byObj) btns.push([{ text: `✅ Заезд: ${o.name} (${o.n})`.slice(0, 60), payload: `m:pc:${oid}` }]);
+        const exObj = new Map<number, { name: string; n: number }>();
+        for (const x of exits.filter((z: any) => z.shiftId)) {
+          const o = exObj.get(x.objectId) ?? { name: x.object, n: 0 };
+          o.n++; exObj.set(x.objectId, o);
+        }
+        for (const [oid, o] of exObj) btns.push([{ text: `🚪 Выезд: ${o.name} (${o.n})`.slice(0, 60), payload: `m:ec:${oid}` }]);
       }
       await sendMaxMenu(chatId, text, [...btns, ...rows], "html");
       return;

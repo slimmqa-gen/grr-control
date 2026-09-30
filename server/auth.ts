@@ -282,6 +282,7 @@ const RULES: Rule[] = [
   // «Сотрудники и вахты». Webhook MAX открыт отдельно (PUBLIC) и защищён секретом.
   { prefix: "/api/max", section: "crew", readGuard: true },
   { prefix: "/api/shift-plans", section: "crew", readGuard: true },
+  { prefix: "/api/exit-plans", section: "crew", readGuard: true },
   { prefix: "/api/sms", section: "crew", readGuard: true },
   { prefix: "/api/hr", section: "crew", readGuard: true },
   { prefix: "/api/employee-events", section: "crew", readGuard: true },
