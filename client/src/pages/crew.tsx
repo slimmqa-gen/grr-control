@@ -3014,7 +3014,7 @@ export default function Crew() {
                         Адрес для событий
                       </label>
                       <Input
-                        value={webhookUrl || maxF.webhookUrl || "https://24pbk.ru/api/max/webhook"}
+                        value={webhookUrl || maxF.webhookUrl || `${window.location.origin}/api/max/webhook`}
                         onChange={(e) => setWebhookUrl(e.target.value)}
                         data-testid="input-max-webhook"
                       />
