@@ -10,6 +10,8 @@ import { startDailyScheduler } from "./daily";
 import { startAutomationScheduler } from "./automation";
 
 const app = express();
+// поисковикам — не индексировать ни одну страницу
+app.use((_req, res, next) => { res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive"); next(); });
 const httpServer = createServer(app);
 
 declare module "http" {
@@ -107,7 +109,8 @@ app.use((req, res, next) => {
   httpServer.listen(
     {
       port,
-      host: "0.0.0.0",
+      // на сервере после deploy/lockdown.sh HOST=127.0.0.1 — программа доступна только через nginx
+      host: process.env.HOST || "0.0.0.0",
     },
     () => {
       log(`serving on port ${port}`);
